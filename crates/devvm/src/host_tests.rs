@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::OtherHost;
-use super::{Comparison, FileId, HoldOutcome, Host, Sharing, current, host_exit_width};
+use super::{Comparison, FileId, HeldKind, HoldOutcome, Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
 use crate::test_groups::{Group, PINNED_CHILD, acp_1252, symlinks};
@@ -693,7 +693,7 @@ fn a_held_read_opens_the_file_for_reading_and_another_reader_still_opens_it(#[fi
     use std::io::Read;
     let path = home.join("a");
     std::fs::write(&path, b"windows").unwrap();
-    let mut held = current().open_held_read(&path, Sharing::Readers).unwrap();
+    let mut held = current().open_held_read(&path, HeldKind::File).unwrap();
     let mut bytes = Vec::new();
     held.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"windows");
@@ -705,7 +705,7 @@ fn a_held_read_opens_the_file_for_reading_and_another_reader_still_opens_it(#[fi
 fn the_final_path_of_a_held_file_leads_to_that_file(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a");
     std::fs::write(&path, b"windows").unwrap();
-    let held = current().open_held_read(&path, Sharing::Readers).unwrap();
+    let held = current().open_held_read(&path, HeldKind::File).unwrap();
     let final_path = current().final_path_of_open(&held, &path).unwrap();
     assert_eq!(
         current().file_id(&final_path).unwrap(),
@@ -717,7 +717,7 @@ fn the_final_path_of_a_held_file_leads_to_that_file(#[fixture(unicode_home)] hom
 fn an_unsupported_host_that_cannot_tell_files_apart_gives_the_canonical_path(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a");
     std::fs::write(&path, b"windows").unwrap();
-    let held = OtherHost.open_held_read(&path, Sharing::Readers).unwrap();
+    let held = OtherHost.open_held_read(&path, HeldKind::File).unwrap();
     assert_eq!(
         OtherHost.final_path_of_open(&held, &path).unwrap(),
         std::fs::canonicalize(&path).unwrap()
@@ -727,7 +727,7 @@ fn an_unsupported_host_that_cannot_tell_files_apart_gives_the_canonical_path(#[f
 #[skuld::test]
 fn a_held_read_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
     let error = current()
-        .open_held_read(&home.join("gone"), Sharing::Readers)
+        .open_held_read(&home.join("gone"), HeldKind::File)
         .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
 }
@@ -1001,7 +1001,7 @@ fn a_hold_off_windows_cannot_be_shared_with_a_process(#[fixture(unicode_home)] h
 fn an_open_file_off_windows_cannot_be_shared_with_a_process(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.file");
     std::fs::write(&path, b"x").unwrap();
-    let file = OtherHost.open_held_read(&path, Sharing::Readers).unwrap();
+    let file = OtherHost.open_held_read(&path, HeldKind::File).unwrap();
     let error = OtherHost
         .share_open_file_with(&file, cosca::identity::ProcessId::current())
         .unwrap_err();

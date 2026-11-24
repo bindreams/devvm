@@ -59,15 +59,15 @@ use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
 
-/// What other programs may do with a file that [`Host::open_held_read`] holds open.
+/// What [`Host::open_held_read`] holds open, and so what other programs may still do with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Sharing {
-    /// Read it, and nothing else: nobody can open it for writing, delete it, rename it or rename another file onto its
-    /// name, while any number of readers still can.
-    Readers,
-    /// Read, write, delete or rename it. The open file alone is what counts: on Windows it still keeps a directory it
-    /// is in from being renamed, and no program that has it open for writing or deleting makes the open fail.
-    Everyone,
+pub(crate) enum HeldKind {
+    /// A file, read: nobody can open it for writing, delete it, rename it or rename another file onto its name, while
+    /// any number of readers still can.
+    File,
+    /// A directory, listed: nobody can delete it or rename it, nor rename the directory it is in, while any program
+    /// can still open, write, delete or rename what is inside it.
+    Directory,
 }
 
 /// How a hypervisor is reached on this host.
@@ -252,27 +252,27 @@ pub(crate) trait Host: Send + Sync {
     /// the name first, so a link made between the look and the open is followed there.
     fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File>;
 
-    /// Opens the file `path` for reading and keeps it as it is for as long as the handle lives, while `sharing` says
-    /// what others may still do with it (Windows: the share mode). A link at `path` is followed. A file that another
-    /// program has open for writing or locked against readers, when `sharing` does not allow that, is `ResourceBusy`,
-    /// "open for writing". A host that cannot deny those (everything but Windows) opens it as `File::open` does.
+    /// Opens the file or directory `path` (`kind` says which) for reading or listing and keeps it as it is for as long
+    /// as the handle lives; `kind` says what others may still do with it (Windows: the share mode). A link at `path`
+    /// is followed. A path that another program has open in a way `kind` does not allow, or that refuses readers, is
+    /// `ResourceBusy`, saying which way. A host that cannot deny those (everything but Windows) opens it as
+    /// `File::open` does.
     ///
-    /// A build holds its Windows ISO with [`Sharing::Readers`] from the moment it keys the layer until the guest's disk
+    /// A build holds its Windows ISO as a [`HeldKind::File`] from the moment it keys the layer until the guest's disk
     /// has its own read-only handle: QEMU opens the ISO read-only with the default sharing, which this mode allows.
-    fn open_held_read(&self, path: &Path, sharing: Sharing) -> std::io::Result<File>;
+    fn open_held_read(&self, path: &Path, kind: HeldKind) -> std::io::Result<File>;
 
     /// Puts a duplicate of the open file `file` in `process`, which keeps `file` as [`Host::open_held_read`] holds it
-    /// until `process` exits, after this process has closed its own copy: [`Hold::share_with`] for a file that is held
-    /// without being a [`Hold`]. The duplicate is not inheritable, so no other process ever gets it. The caller holds
-    /// `process` open, so its identity cannot be taken by another. A host that cannot start a process frozen (all but
-    /// Windows) fails `Unsupported`.
+    /// until `process` exits, after this process has closed its own copy: a [`Hold`]'s `file()` or a handle from
+    /// `open_held_read`. The duplicate is not inheritable, so no other process ever gets it. The caller holds `process`
+    /// open, so its identity cannot be taken by another. A host that cannot start a process frozen (all but Windows)
+    /// fails `Unsupported`.
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()>;
 
-    /// The OS error codes that renaming a directory fails with while it is in use: a file inside it is open, whatever
-    /// it shares ([`Host::open_held_read`] opens one), or the directory itself is open as a working directory.
+    /// The OS error codes that renaming a directory fails with while it is in use: something inside it is open,
+    /// whatever it shares (a [`HeldKind::Directory`] is one), or the directory itself is open as a working directory.
     /// Empty on a host where an open file does not stop the rename: no directory can be shown to be in use there, and
-    /// devvm removes none on that ground. Windows: 5 (`ERROR_ACCESS_DENIED`) for a file inside, 32
-    /// (`ERROR_SHARING_VIOLATION`) for the directory itself.
+    /// devvm removes none on that ground.
     fn rename_refused_by_open_file(&self) -> &'static [i32];
 
     /// The path of `file`, opened by [`Host::open_held_read`] at `opened_by`, with no link in it: a program that opens

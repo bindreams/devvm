@@ -9,15 +9,16 @@
 //! - `.extract-<random>/`: an extraction in progress, or an install being removed; a killed devvm leaves one behind;
 //! - `.extract.lock`: one OS lock around extraction, publication and removal.
 //!
-//! An install is in use while a process holds a file inside it open: the [`QemuInstall`] a resolve returns keeps one
-//! open ([`HELD_TOOL`], read-only, every sharing allowed) for as long as the value lives, and Windows refuses to rename a
-//! directory with a file open in it, whatever the file shares. A launch gives QEMU a duplicate of that handle
-//! ([`Host::share_open_file_with`]), which QEMU keeps until it exits, so the install stays held for as long as any
-//! process that resolved it lives and any QEMU started from it runs, whether or not the devvm that started it has
-//! exited. Removal renames, so an install in use is never touched. No record of which install a machine runs is kept,
-//! and none is needed. A configured `qemu.path` is the user's own: nothing is held or given for it. A host where an
-//! open file does not stop the rename ([`Host::rename_refused_by_open_file`]) has no such test, and removes nothing
-//! there: a manifest entry for another OS needs its own in-use test first.
+//! An install is in use while a process has its `bin` directory open: the [`QemuInstall`] a resolve returns keeps it
+//! open ([`HeldKind::Directory`]) for as long as the value lives. While it is open Windows refuses to rename the
+//! install or `bin`, and to remove `bin`, whatever is done to the files inside, so nothing can unlink the hold (a
+//! scanner quarantining a tool, a user deleting one). A launch gives QEMU a duplicate of that handle
+//! ([`Host::share_open_file_with`]), and so does every `qemu-img` or `--version` run; each keeps it until it exits,
+//! whether or not the devvm that started it has. Removal renames, so an install in use is never touched. A QEMU
+//! started by a devvm that did not hold its install is not seen as using it. A configured `qemu.path` is the user's
+//! own: nothing is held or given for it. A host where an open file does not stop the rename
+//! ([`Host::rename_refused_by_open_file`]) has no such test, and removes nothing there: a manifest entry for another
+//! OS needs its own in-use test first.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -29,7 +30,7 @@ use serde::Deserialize;
 
 use super::args::ArchFiles;
 use crate::config::Config;
-use crate::host::{Host, Sharing, SystemDirs};
+use crate::host::{HeldKind, Host, SystemDirs};
 use crate::lazy::Lazy;
 use crate::progress::{Progress, Total};
 use crate::store::fetch::{Artifact, Fetcher};
@@ -59,10 +60,8 @@ const ARCHIVE_FIRMWARE: &[&str] = &[
 ];
 /// The tools run with `--version` before an extraction is published.
 const VERSIONED_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64"];
-/// The file of an install that a [`QemuInstall`] keeps open. Every install has it, and it is held with every sharing
-/// allowed ([`Sharing::Everyone`]): that it is open is all that protects the install, and nothing that has it open can
-/// make the launch fail or stop QEMU and `qemu-img` from starting from the install.
-const HELD_TOOL: &str = "qemu-img";
+/// The tool every install has: one without it is an install that lost it, and is extracted again.
+const REQUIRED_TOOL: &str = "qemu-img";
 /// The characters of the zip's sha256 an install's directory name carries.
 const INSTALL_HASH_LEN: usize = 12;
 
@@ -116,8 +115,9 @@ pub(crate) struct QemuInstall {
     pub version: String,
     /// The sha256 of the downloaded archive; `None` for a configured QEMU.
     pub zip_sha256: Option<Sha256>,
-    /// [`HELD_TOOL`] of a downloaded install, open for as long as any copy of this value lives: the proof that the
-    /// install was there when the value was made, and what keeps it from being removed. `None` for a configured QEMU.
+    /// The `bin` directory of a downloaded install, open for as long as any copy of this value lives: the proof that
+    /// the install was there when the value was made, and what keeps it from being removed. `None` for a configured
+    /// QEMU.
     pub held: Option<Arc<File>>,
 }
 
@@ -251,17 +251,21 @@ impl Source {
         }
     }
 
-    /// The install at `root`, holding its [`HELD_TOOL`] open; `None` when it is not there. Opening the file by its
-    /// published path is the check that the install exists, and from then on the open file keeps it.
+    /// The install at `root`, holding its `bin` directory open; `None` when the install is not there or has lost its
+    /// [`REQUIRED_TOOL`]. Opening `bin` by its published path is the check that the install exists, and from then on
+    /// the open directory keeps it. Another program that has `bin` open without sharing it fails the call.
     fn holding(&self, root: &Path, entry: &ManifestEntry) -> Result<Option<QemuInstall>> {
-        let tool = root
-            .join("bin")
-            .join(format!("{HELD_TOOL}{}", std::env::consts::EXE_SUFFIX));
-        match self.host.open_held_read(&tool, Sharing::Everyone) {
-            Ok(file) => Ok(Some(self.install_at(root, entry, Some(Arc::new(file))))),
-            Err(e) if crate::host::is_absent(&e) => Ok(None),
-            Err(e) => Err(Error::io(ErrorKind::Io, format!("cannot open {}", tool.display()), e)),
-        }
+        let bin = root.join("bin");
+        let held = match self.host.open_held_read(&bin, HeldKind::Directory) {
+            Ok(file) => file,
+            Err(e) if crate::host::is_absent(&e) => return Ok(None),
+            Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot hold {}", bin.display()), e)),
+        };
+        let install = self.install_at(root, entry, Some(Arc::new(held)));
+        let tool = install.tool(REQUIRED_TOOL);
+        let present = crate::host::symlink_metadata_if_present(&tool)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", tool.display()), e))?;
+        Ok(present.map(|_| install))
     }
 
     /// The install, downloading and extracting it first if it is not in the cache.
@@ -374,11 +378,18 @@ impl Source {
         }
         let aside = quarantine_path(qemu, ".extract")?;
         std::fs::rename(published, &aside).map_err(|e| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot move the incomplete {} aside", published.display()),
-                e,
-            )
+            let in_use = e
+                .raw_os_error()
+                .is_some_and(|code| self.host.rename_refused_by_open_file().contains(&code));
+            let what = if in_use {
+                format!(
+                    "the incomplete {} is in use and cannot be moved aside",
+                    published.display()
+                )
+            } else {
+                format!("cannot move the incomplete {} aside", published.display())
+            };
+            Error::io(ErrorKind::Io, what, e)
         })?;
         self.sweep_extractions(qemu)
     }

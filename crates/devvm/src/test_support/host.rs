@@ -11,7 +11,7 @@ use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
 use crate::host::{
-    self, Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, Sharing, SystemDirs, Unavailable, names,
+    self, Accel, Entry, FileId, HeldKind, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, names,
 };
 use crate::{Arch, Result};
 
@@ -148,8 +148,8 @@ impl Host for TestHost {
         host::current().open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path, sharing: Sharing) -> std::io::Result<File> {
-        host::current().open_held_read(path, sharing)
+    fn open_held_read(&self, path: &Path, kind: HeldKind) -> std::io::Result<File> {
+        host::current().open_held_read(path, kind)
     }
 
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()> {
@@ -311,8 +311,8 @@ impl Host for NoAccelHost {
         TestHost.open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path, sharing: Sharing) -> std::io::Result<File> {
-        TestHost.open_held_read(path, sharing)
+    fn open_held_read(&self, path: &Path, kind: HeldKind) -> std::io::Result<File> {
+        TestHost.open_held_read(path, kind)
     }
 
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()> {
@@ -665,8 +665,8 @@ impl Host for RecordingHost {
         TestHost.open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path, sharing: Sharing) -> std::io::Result<File> {
-        TestHost.open_held_read(path, sharing)
+    fn open_held_read(&self, path: &Path, kind: HeldKind) -> std::io::Result<File> {
+        TestHost.open_held_read(path, kind)
     }
 
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()> {
@@ -833,8 +833,8 @@ impl Host for NoGuestReset {
         host::current().open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path, sharing: Sharing) -> std::io::Result<File> {
-        host::current().open_held_read(path, sharing)
+    fn open_held_read(&self, path: &Path, kind: HeldKind) -> std::io::Result<File> {
+        host::current().open_held_read(path, kind)
     }
 
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()> {

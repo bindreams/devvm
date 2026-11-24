@@ -24,7 +24,7 @@ use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMAN
 use super::create_file::{Failure, open};
 use super::file_id;
 use super::wide;
-use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, Sharing, deleting_name, is_a_link, is_absent};
+use crate::host::{DELETING_DRAW_BYTES, FileId, HeldKind, Hold, HoldOutcome, deleting_name, is_a_link, is_absent};
 use crate::random;
 
 /// Marks `file`, open with `DELETE` access, for deletion: `FileDispositionInfoEx` with `FILE_DISPOSITION_FLAG_DELETE`
@@ -234,23 +234,30 @@ pub(super) fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File>
     Ok(file)
 }
 
-/// [`Host::open_held_read`](crate::host::Host::open_held_read): read access, and the share mode `sharing` names:
-/// `FILE_SHARE_READ` for [`Sharing::Readers`], so no other open can write the file, delete it or rename it, whichever
-/// handle does; all three sharings for [`Sharing::Everyone`]. A file that someone has open for a use `sharing` does not
-/// allow, or that refuses readers, is `ERROR_SHARING_VIOLATION`.
-pub(super) fn open_held_read(path: &Path, sharing: Sharing) -> std::io::Result<File> {
-    let share = match sharing {
-        Sharing::Readers => FILE_SHARE_READ,
-        Sharing::Everyone => FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+/// [`Host::open_held_read`](crate::host::Host::open_held_read): read access, and the share mode `kind` names.
+/// A [`HeldKind::File`] shares `FILE_SHARE_READ` only, so no other open can write the file, delete it or rename it,
+/// whichever handle does. A [`HeldKind::Directory`] is opened for listing (`FILE_FLAG_BACKUP_SEMANTICS`) and shares
+/// read and write but not delete: while it is open the directory cannot be renamed or removed, nor can the directory
+/// it is in be renamed, and any open of what is inside it, whatever it shares or asks for, still succeeds. A path
+/// opened in a way the share mode refuses, or that refuses readers, is `ERROR_SHARING_VIOLATION`.
+pub(super) fn open_held_read(path: &Path, kind: HeldKind) -> std::io::Result<File> {
+    let (share, flags, refused) = match kind {
+        HeldKind::File => (
+            FILE_SHARE_READ,
+            0,
+            "another program has it open for writing, or does not let others read it",
+        ),
+        HeldKind::Directory => (
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            "another program has it open to delete or rename it, or does not let others read it",
+        ),
     };
-    open(path, FILE_GENERIC_READ, share, OPEN_EXISTING, 0, None).map_err(|failure| {
+    open(path, FILE_GENERIC_READ, share, OPEN_EXISTING, flags, None).map_err(|failure| {
         if failure.is_sharing_violation() {
             return std::io::Error::new(
                 std::io::ErrorKind::ResourceBusy,
-                format!(
-                    "another program has it open for writing, or does not let others read it ({})",
-                    failure.error
-                ),
+                format!("{refused} ({})", failure.error),
             );
         }
         failure.into()

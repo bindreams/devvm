@@ -10,7 +10,7 @@ use cosca::identity::ProcessId;
 
 use super::names::{posix_problem, unix_run_dir};
 use super::{
-    Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, Sharing, SystemDirs, Unavailable, after_failed_write,
+    Accel, Entry, FileId, HeldKind, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
     create_new_with, look_failed, nearest_existing_dir,
 };
 use crate::exit::ExitWidth;
@@ -240,7 +240,7 @@ impl<M: FileModes> Host for M {
         hold::open_refusing_links(self, path, create)
     }
 
-    fn open_held_read(&self, path: &Path, _sharing: Sharing) -> std::io::Result<File> {
+    fn open_held_read(&self, path: &Path, _kind: HeldKind) -> std::io::Result<File> {
         File::open(path)
     }
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::{WindowsHost, user, wide};
 use crate::host::names::windows_run_dir;
-use crate::host::{Entry, HoldOutcome, Host, Sharing};
+use crate::host::{Entry, HeldKind, HoldOutcome, Host};
 use crate::test_support::file_security::{Security, set_protected_dacl};
 use crate::test_support::fixtures::unicode_home;
 
@@ -418,7 +418,7 @@ fn a_file_held_for_reading_cannot_be_written_deleted_or_renamed_onto_or_away(#[f
     std::fs::write(&path, b"windows").unwrap();
     let other = home.join("b.iso");
     std::fs::write(&other, b"somewhere else").unwrap();
-    let held = WindowsHost.open_held_read(&path, Sharing::Readers).unwrap();
+    let held = WindowsHost.open_held_read(&path, HeldKind::File).unwrap();
 
     assert!(OpenOptions::new().write(true).open(&path).is_err(), "written in place");
     assert!(std::fs::write(&path, b"patched").is_err(), "truncated in place");
@@ -445,7 +445,92 @@ fn a_file_open_for_writing_cannot_be_held_and_the_error_says_why(#[fixture(unico
     let path = home.join("a.iso");
     std::fs::write(&path, b"windows").unwrap();
     let _writer = OpenOptions::new().write(true).open(&path).unwrap();
-    let error = WindowsHost.open_held_read(&path, Sharing::Readers).unwrap_err();
+    let error = WindowsHost.open_held_read(&path, HeldKind::File).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ResourceBusy, "{error}");
     assert!(error.to_string().contains("open for writing"), "{error}");
+}
+
+/// `<home>/<name>/bin/tool`, and the open directory `<home>/<name>/bin`.
+fn held_bin(home: &Path, name: &str) -> (PathBuf, std::fs::File) {
+    let root = home.join(name);
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::write(root.join("bin").join("tool"), b"tool").unwrap();
+    let held = WindowsHost
+        .open_held_read(&root.join("bin"), HeldKind::Directory)
+        .unwrap();
+    (root, held)
+}
+
+/// What a rename or a removal fails with while the directory is held, and the codes the host names for it.
+fn refused_with_a_code_the_host_names(result: std::io::Result<()>) {
+    let error = result.unwrap_err();
+    let code = error.raw_os_error().expect("an operating system error");
+    assert!(WindowsHost.rename_refused_by_open_file().contains(&code), "{error:?}");
+}
+
+/// Measured on Windows 11 (build 26100): renaming the directory above the held one fails with 5
+/// (`ERROR_ACCESS_DENIED`), renaming or removing the held one with 32 (`ERROR_SHARING_VIOLATION`).
+#[skuld::test]
+fn a_held_directory_keeps_itself_and_the_directory_above_it_from_being_renamed_or_removed(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let (root, held) = held_bin(home, "install");
+
+    refused_with_a_code_the_host_names(std::fs::rename(&root, home.join("moved")));
+    refused_with_a_code_the_host_names(std::fs::rename(root.join("bin"), root.join("moved")));
+    refused_with_a_code_the_host_names(std::fs::remove_dir(root.join("bin")));
+
+    drop(held);
+    std::fs::rename(&root, home.join("moved")).unwrap();
+}
+
+/// What protects the directory is that it is open: nothing done to the files inside it, by a program with any access
+/// and any sharing, makes the open fail or lets the hold go, and deleting the last file does not either.
+#[skuld::test]
+fn a_held_directory_stays_held_whatever_is_done_to_the_files_inside_it(#[fixture(unicode_home)] home: &Path) {
+    use std::os::windows::fs::OpenOptionsExt;
+    const DELETE: u32 = 0x0001_0000;
+    let (root, held) = held_bin(home, "install");
+    let tool = root.join("bin").join("tool");
+
+    for (share, access) in [(0, 0x8000_0000), (0, 0x8000_0000 | DELETE), (7, 0x8000_0000 | DELETE)] {
+        OpenOptions::new()
+            .access_mode(access)
+            .share_mode(share)
+            .open(&tool)
+            .unwrap_or_else(|e| panic!("share {share}, access {access:#x}: {e}"));
+    }
+    std::fs::remove_file(&tool).unwrap();
+    assert!(
+        std::fs::read_dir(root.join("bin")).unwrap().next().is_none(),
+        "the tool is gone"
+    );
+
+    refused_with_a_code_the_host_names(std::fs::rename(&root, home.join("moved")));
+    drop(held);
+    std::fs::rename(&root, home.join("moved")).unwrap();
+}
+
+/// A program that has the directory open to delete or rename it (a removal or a move under way) cannot be shared with:
+/// the hold is refused, and the error says that.
+#[skuld::test]
+fn a_directory_another_program_has_open_for_deleting_cannot_be_held_and_the_error_says_why(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    use std::os::windows::fs::OpenOptionsExt;
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let bin = home.join("install").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let _deleter = OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(7)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&bin)
+        .unwrap();
+
+    let error = WindowsHost.open_held_read(&bin, HeldKind::Directory).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::ResourceBusy, "{error}");
+    assert!(error.to_string().contains("open to delete or rename it"), "{error}");
 }

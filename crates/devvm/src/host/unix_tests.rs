@@ -5,7 +5,7 @@ use std::path::Path;
 use rustix::io::Errno;
 
 use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
-use crate::host::{Entry, Host, Sharing};
+use crate::host::{Entry, HeldKind, Host};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -234,7 +234,7 @@ fn the_final_path_of_a_held_file_is_refused_when_its_name_now_leads_to_another_f
 ) {
     let path = home.join("a.iso");
     std::fs::write(&path, b"windows").unwrap();
-    let held = UnixHost.open_held_read(&path, Sharing::Readers).unwrap();
+    let held = UnixHost.open_held_read(&path, HeldKind::File).unwrap();
     std::fs::write(home.join("b.iso"), b"somewhere else").unwrap();
     std::fs::rename(home.join("b.iso"), &path).unwrap();
 

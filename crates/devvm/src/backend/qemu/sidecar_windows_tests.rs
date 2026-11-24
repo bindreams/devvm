@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::sidecar_tests::{World, entries, files, old_install, visible, world, zip_of};
 use crate::contain::Lifetime;
-use crate::host::{self, Sharing};
+use crate::host;
 use crate::test_support::fake_vm;
 use crate::test_support::fixtures::unicode_home;
 
@@ -16,57 +16,8 @@ fn world_pinning_another_build(home: &Path) -> World {
     world(home, zip_of(&other))
 }
 
-/// The error a rename fails with while a file inside the directory is open without delete sharing, measured on Windows
-/// 11 (build 26100) on 2026-11-24: `ERROR_ACCESS_DENIED`, which the host names as the sign of an install in use.
-#[skuld::test]
-fn renaming_a_directory_with_a_held_file_fails_with_the_code_the_host_names(#[fixture(unicode_home)] home: &Path) {
-    let dir = home.join("held");
-    std::fs::create_dir_all(dir.join("bin")).unwrap();
-    std::fs::write(dir.join("bin").join("tool"), b"tool").unwrap();
-    let held = host::current()
-        .open_held_read(&dir.join("bin").join("tool"), Sharing::Readers)
-        .unwrap();
-
-    let refused = std::fs::rename(&dir, home.join("moved")).unwrap_err();
-
-    let code = refused.raw_os_error().expect("an operating system error");
-    assert!(
-        host::current().rename_refused_by_open_file().contains(&code),
-        "{refused:?}"
-    );
-    drop(held);
-    std::fs::rename(&dir, home.join("moved")).unwrap();
-}
-
-/// A file inside a directory, open for reading with every sharing there is, still stops the directory's rename: what
-/// protects an install is that a file in it is open, not what the handle denies others.
-#[skuld::test]
-fn renaming_a_directory_with_a_file_open_that_shares_everything_fails_with_the_code_the_host_names(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
-    let dir = home.join("shared");
-    std::fs::create_dir_all(dir.join("bin")).unwrap();
-    std::fs::write(dir.join("bin").join("tool"), b"tool").unwrap();
-    let open = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_ALL)
-        .open(dir.join("bin").join("tool"))
-        .unwrap();
-
-    let refused = std::fs::rename(&dir, home.join("moved")).unwrap_err();
-
-    let code = refused.raw_os_error().expect("an operating system error");
-    assert!(
-        host::current().rename_refused_by_open_file().contains(&code),
-        "{refused:?}"
-    );
-    drop(open);
-    std::fs::rename(&dir, home.join("moved")).unwrap();
-}
-
 /// A program that has the install's `qemu-img.exe` open for writing and deleting (a scanner, right after an
-/// extraction) does not make a launch fail: the hold asks nothing of the file but that it is open.
+/// extraction) does not make a launch fail: the hold is of the `bin` directory, which the tool's opens do not touch.
 #[skuld::test]
 fn an_install_whose_tool_another_program_has_open_for_writing_is_still_held(#[fixture(unicode_home)] home: &Path) {
     const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
@@ -83,14 +34,77 @@ fn an_install_whose_tool_another_program_has_open_for_writing_is_still_held(#[fi
 
     assert!(install.held.is_some());
     drop(scanner);
-    let moved = home.join("moved");
-    let refused = std::fs::rename(install.bin.parent().unwrap(), &moved).unwrap_err();
+    let refused = std::fs::rename(install.bin.parent().unwrap(), home.join("moved")).unwrap_err();
     assert!(
         host::current()
             .rename_refused_by_open_file()
             .contains(&refused.raw_os_error().expect("an operating system error")),
         "the hold keeps the install from being renamed: {refused:?}"
     );
+}
+
+/// A scanner that quarantines the tool, or a user who deletes it, while another devvm holds the install: the hold is
+/// not the tool, so the install stays whole for as long as it is held.
+#[skuld::test]
+fn an_install_whose_tool_is_deleted_while_it_is_held_is_kept(#[fixture(unicode_home)] home: &Path) {
+    let first = world(home, zip_of(&files()));
+    let second = world_pinning_another_build(home);
+    let qemu = first.dirs.qemu();
+    let install = first.source.resolve().unwrap();
+    std::fs::remove_file(install.tool("qemu-img")).unwrap();
+
+    second.source.resolve().unwrap();
+
+    assert_eq!(visible(&qemu).len(), 2, "{:?}", entries(&qemu));
+    assert!(install.share.join("edk2-x86_64-code.fd").is_file());
+    assert!(
+        second.progress.warnings().is_empty(),
+        "{:?}",
+        second.progress.warnings()
+    );
+    drop(install);
+    second.source.resolve().unwrap();
+    assert_eq!(visible(&qemu).len(), 1, "{:?}", entries(&qemu));
+}
+
+/// An install in use that has lost its tool cannot be replaced while it is in use: the error names it.
+#[skuld::test]
+fn an_install_in_use_that_lost_its_tool_is_not_replaced_and_the_error_says_so(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let install = world.source.resolve().unwrap();
+    std::fs::remove_file(install.tool("qemu-img")).unwrap();
+
+    let error = world.source.resolve().unwrap_err();
+
+    let text = error.to_string();
+    let root = install.bin.parent().unwrap().display().to_string();
+    assert!(text.contains(&root), "{text}");
+    assert!(text.contains("incomplete") && text.contains("in use"), "{text}");
+    assert!(
+        install.share.join("edk2-x86_64-code.fd").is_file(),
+        "the install in use was touched"
+    );
+}
+
+/// A program that has `bin` open to delete or rename it cannot be shared with, and the resolve says so.
+#[skuld::test]
+fn a_resolve_fails_naming_why_when_another_program_has_bin_open_for_deleting(#[fixture(unicode_home)] home: &Path) {
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let world = world(home, zip_of(&files()));
+    let bin = world.source.resolve().unwrap().bin;
+    let _deleter = OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(0x1 | 0x2 | 0x4)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&bin)
+        .unwrap();
+
+    let error = world.source.resolve().unwrap_err();
+
+    let text = error.to_string();
+    assert!(text.contains(&format!("cannot hold {}", bin.display())), "{text}");
+    assert!(text.contains("open to delete or rename it"), "{text}");
 }
 
 /// `dir` open as the system opens a process's working directory for `SetCurrentDirectory`: `FILE_TRAVERSE` and share
