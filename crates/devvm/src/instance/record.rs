@@ -434,7 +434,11 @@ impl Holder {
     /// This process. The library can be embedded in any application, so only the program name is kept, never an
     /// argument.
     pub(crate) fn current() -> Result<Holder> {
-        let id = cosca::identity::ProcessId::current();
+        // `ProcessId::current` panics where the host refuses the process its own handle; `Process::current` is the
+        // fallible call.
+        let id = cosca::Process::current()
+            .map_err(|e| cosca_error("cannot identify this process", e))?
+            .id();
         let process = id
             .to_record()
             .map_err(|e| cosca_error(&format!("cannot record process {}", id.pid()), e))?;
