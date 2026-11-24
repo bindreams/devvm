@@ -536,7 +536,11 @@ fn a_blank_line_ends_in_a_carriage_return_and_line_feed_like_in_a_line_feed() {
 fn a_doubled_carriage_return_before_a_line_feed_ends_one_blank_line() {
     assert_eq!(lines_reported(&[b"\r\r\nb\n"]), ["", "b"], "at the start");
     assert_eq!(lines_reported(&[b"a\n\r\r\nb\n"]), ["a", "", "b"], "after a line feed");
-    assert_eq!(lines_reported(&[b"a\r\n\r\r\nb\n"]), ["a", "", "b"], "after a carriage return and line feed");
+    assert_eq!(
+        lines_reported(&[b"a\r\n\r\r\nb\n"]),
+        ["a", "", "b"],
+        "after a carriage return and line feed"
+    );
     assert_eq!(
         lines_reported(&[b"\r", b"\r", b"\n", b"b\n"]),
         ["", "b"],
@@ -631,7 +635,11 @@ fn a_chunk_never_splits_a_character() {
             let text = format!("{}{c}tail", "a".repeat(LINE_CHUNK - cut));
             let first = "a".repeat(LINE_CHUNK - cut);
             let reported = lines_reported(&[&input]);
-            assert_eq!(reported, [first.as_str(), &format!("{c}tail")], "{c:?} cut after {cut} bytes");
+            assert_eq!(
+                reported,
+                [first.as_str(), &format!("{c}tail")],
+                "{c:?} cut after {cut} bytes"
+            );
             // Writes that split the character anywhere, at its ends included.
             let start = LINE_CHUNK - cut;
             for split in start..=start + c.len() {
