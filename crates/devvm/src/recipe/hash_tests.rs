@@ -6,7 +6,7 @@ use crate::recipe::hash::{
     CopyManifest, EntryContent, KeyContext, LayerKey, ManifestEntry, RootContent, STEP_SEMANTICS_VERSION, chain_keys,
     root_key, root_key_with, step_key, step_key_with,
 };
-use crate::recipe::{CopyFrom, ProductKey, Recipe, Setting, Shell, Step, UacMode};
+use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Setting, Shell, Step, UacMode};
 use crate::test_support::fixtures::unicode_home;
 use crate::{Arch, ErrorKind, RunAs, Sha256, Sha512};
 
@@ -451,7 +451,10 @@ fn manifest_rejects_duplicates_and_inconsistent_modes() {
 const SHA_TEXT: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
 fn keys_of(text: &str, origin: &Path) -> Vec<LayerKey> {
-    let flat = Recipe::parse(text, origin).unwrap().flatten().unwrap();
+    keys_of_flat(&Recipe::parse(text, origin).unwrap().flatten().unwrap())
+}
+
+fn keys_of_flat(flat: &Flattened) -> Vec<LayerKey> {
     let ctx = KeyContext {
         arch: Arch::Amd64,
         disk: flat.resources.disk,
@@ -466,7 +469,26 @@ fn keys_of(text: &str, origin: &Path) -> Vec<LayerKey> {
             _ => None,
         })
         .collect();
-    chain_keys(&flat, &ctx, &content, &[5; 32], &manifests).unwrap()
+    chain_keys(flat, &ctx, &content, &[5; 32], &manifests).unwrap()
+}
+
+#[skuld::test]
+fn layer_keys_ignore_which_recipe_declared_a_step(#[fixture(unicode_home)] home: &Path) {
+    let steps = "  - run: one\n  - run: two\n  - run: three\n";
+    let whole = home.join("whole.devvm.yaml");
+    std::fs::write(&whole, format!("from: ubuntu-24.04\nsteps:\n{steps}")).unwrap();
+    std::fs::write(
+        home.join("base.devvm.yaml"),
+        "from: ubuntu-24.04\nsteps:\n  - run: one\n  - run: two\n",
+    )
+    .unwrap();
+    let top = home.join("top.devvm.yaml");
+    std::fs::write(&top, "from: base.devvm.yaml\nsteps:\n  - run: three\n").unwrap();
+
+    let whole = Recipe::from_file(&whole).unwrap().flatten().unwrap();
+    let split = Recipe::from_file(&top).unwrap().flatten().unwrap();
+    assert_ne!(whole.steps[2].recipe, split.steps[2].recipe);
+    assert_eq!(keys_of_flat(&whole), keys_of_flat(&split));
 }
 
 const PLAIN: &str = "from: ubuntu-24.04\nresources: { disk: 40GiB }\nsteps:\n  - run: |\n      echo a\n      echo b\n  - copy: { from: git-tracked, to: ~/p }\n    # trailing comment\n";
