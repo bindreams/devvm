@@ -127,7 +127,7 @@ fn assert_no_leftovers(target: &dyn ContractTarget, before: &HashSet<PathBuf>, a
 
 /// Ends the process of a machine, by its recorded identity, when the test fails before the machine has ended: a failed
 /// function would otherwise leave it running after the test run. Failures to end it are reported on stderr.
-struct KillsOnDrop<'a>(&'a MachineRecord);
+pub(crate) struct KillsOnDrop<'a>(pub(crate) &'a MachineRecord);
 
 impl Drop for KillsOnDrop<'_> {
     fn drop(&mut self) {
