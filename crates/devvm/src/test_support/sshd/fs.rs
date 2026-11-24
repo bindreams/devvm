@@ -510,8 +510,7 @@ impl Handler for SftpFs {
             // Generated and discarded files have no time to set.
             let real = self.real(&path);
             if real.is_file() || real.is_dir() {
-                filetime::set_file_mtime(&real, filetime::FileTime::from_unix_time(i64::from(mtime), 0))
-                    .map_err(from_io)?;
+                crate::host::current().set_mtime(&real, mtime).map_err(from_io)?;
             }
         }
         if let Some(permissions) = attrs.permissions {
