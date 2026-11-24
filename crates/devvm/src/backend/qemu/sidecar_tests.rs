@@ -11,7 +11,7 @@ use super::{
 };
 use crate::backend::qemu::args::ArchFiles;
 use crate::config::Config;
-use crate::host::{self, Host, OtherHost, SystemDirs};
+use crate::host::{self, Host, SystemDirs};
 use crate::progress::{Event, Outcome as TaskOutcome};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::store::lock::{FileLock, Mode};
@@ -590,6 +590,11 @@ fn recording_host() -> &'static RecordingHost {
     Box::leak(Box::new(RecordingHost::new()))
 }
 
+/// A host that cannot tell an install is in use, and otherwise acts as the machine does: it can open a directory.
+fn host_without_in_use_codes() -> &'static RecordingHost {
+    Box::leak(Box::new(RecordingHost::without_in_use_codes()))
+}
+
 #[skuld::test]
 fn an_install_whose_rename_the_host_refuses_as_in_use_is_kept_and_recorded_without_a_warning(
     #[fixture(unicode_home)] home: &Path,
@@ -799,7 +804,7 @@ fn a_host_that_cannot_tell_an_install_is_in_use_removes_none(#[fixture(unicode_h
     let world = world(home, zip_of(&files()));
     let qemu = world.dirs.qemu();
     let old = old_install(&qemu, "10.0.0-0123456789ab");
-    let source = world.source_on(&OtherHost);
+    let source = world.source_on(host_without_in_use_codes());
 
     source.resolve().unwrap();
     source.resolve().unwrap();
@@ -879,7 +884,7 @@ fn a_host_that_cannot_tell_an_install_is_in_use_still_sweeps_leftover_extraction
     #[fixture(unicode_home)] home: &Path,
 ) {
     let world = world(home, zip_of(&files()));
-    let source = world.source_on(&OtherHost);
+    let source = world.source_on(host_without_in_use_codes());
     source.resolve().unwrap();
     let leftover = leftover_extraction(&world.dirs.qemu());
 
