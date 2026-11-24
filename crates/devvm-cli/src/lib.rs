@@ -114,34 +114,31 @@ pub fn install_panic_hook() {
 
 fn dispatch(deps: &Deps, command: Cmd, verbose: bool) -> Result<ExitStatus> {
     let progress = output::sinks(verbose).progress;
-    // `doctor` builds its own engine, one that does not fail on config.yaml; no engine is built twice.
-    if let Cmd::Doctor = command {
-        return doctor::doctor(deps.transport.clone(), progress);
-    }
-    let engine = Engine::from_env(progress, deps.transport.clone());
+    let engine = || Engine::from_env(progress.clone(), deps.transport.clone());
     match command {
-        Cmd::Ls { all, json } => list(&engine?, all, json),
+        Cmd::Ls { all, json } => list(&engine()?, all, json),
         Cmd::Rm { name } => {
-            engine?.instance(&name)?.remove()?;
+            engine()?.instance(&name)?.remove()?;
             Ok(ExitStatus::Code(0))
         }
-        Cmd::Build { reference, arch } => run::build(&engine?, &reference, arch),
+        Cmd::Build { reference, arch } => run::build(&engine()?, &reference, arch),
         Cmd::Run {
             reference,
             flags,
             elevated,
             argv,
-        } => run::run(&engine?, &reference, &flags, elevated, &argv),
-        Cmd::Up { reference, name, flags } => run::up(&engine?, &reference, &name, &flags),
+        } => run::run(&engine()?, &reference, &flags, elevated, &argv),
+        Cmd::Up { reference, name, flags } => run::up(&engine()?, &reference, &name, &flags),
         Cmd::Ssh {
             instance,
             elevated,
             argv,
-        } => run::ssh(&engine?, &instance, elevated, &argv),
-        Cmd::Cp { src, dst } => run::cp(&engine?, &src, &dst),
-        Cmd::Start { name } => run::start(&engine?, &name),
-        Cmd::Stop { name } => run::stop(&engine?, &name),
-        Cmd::Doctor => unreachable!("handled above"),
+        } => run::ssh(&engine()?, &instance, elevated, &argv),
+        Cmd::Cp { src, dst } => run::cp(&engine()?, &src, &dst),
+        Cmd::Start { name } => run::start(&engine()?, &name),
+        Cmd::Stop { name } => run::stop(&engine()?, &name),
+        // Builds its own engine, one that does not fail on config.yaml.
+        Cmd::Doctor => doctor::doctor(deps.transport.clone(), progress.clone()),
     }
 }
 
