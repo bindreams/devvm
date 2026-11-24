@@ -6,7 +6,7 @@ use russh::client::Msg;
 use russh::{Channel, ChannelMsg, Sig};
 use tokio::sync::mpsc;
 
-use crate::access::session::Inner;
+use crate::access::session::{Inner, Watch};
 use crate::exit::ExitStatus;
 use crate::{Error, ErrorKind, Result};
 
@@ -114,7 +114,7 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
     let outcome = inner
         .guarded(
             &awaiting,
-            false,
+            Watch::VmAndBoot,
             run(&inner, &command, &awaiting, &events, &mut status, &mut channel),
         )
         .await;
@@ -124,7 +124,7 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
         // back a window or a socket write (a frozen guest, another channel's upload in flight): the guard that ended
         // `run` bounds this wait too, so the close is sent if there is room and given up if there is none.
         let _ = inner
-            .guarded(&awaiting, false, async { Ok(channel.close().await.is_ok()) })
+            .guarded(&awaiting, Watch::VmAndBoot, async { Ok(channel.close().await.is_ok()) })
             .await;
     }
     match (outcome, status) {

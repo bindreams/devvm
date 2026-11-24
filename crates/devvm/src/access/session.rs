@@ -403,6 +403,20 @@ pub(crate) fn is_not_started(error: &Error) -> bool {
     std::error::Error::source(error).is_some_and(|source| source.is::<NotStarted>())
 }
 
+/// What ends a [`Inner::guarded`] operation besides the VM exiting and the boot bound passing, neither of which marks
+/// its error as one of an operation that had not started.
+#[derive(Clone, Copy)]
+pub(super) enum Watch {
+    /// Nothing else: the operation sees the end of the connection itself (a channel that closes), as a race here could
+    /// report a lost connection for a command that has finished.
+    VmAndBoot,
+    /// The connection ending.
+    Transport,
+    /// The connection ending, before anything of the operation reached the guest: its error is marked with
+    /// [`not_started`].
+    TransportBeforeStart,
+}
+
 /// Why one connection attempt failed.
 enum Failure {
     Tcp(std::io::Error),
@@ -460,22 +474,18 @@ pub(crate) struct SshSession {
 }
 
 impl Inner {
-    /// Runs `operation`, ending it early when the VM process exits, when a booting guest passes its boot bound and,
-    /// if `watch_transport`, when the connection ends. `awaiting` names the operation in those errors.
-    ///
-    /// An `operation` that sees the end of the connection itself (a channel that closes) passes `false`: this race
-    /// could otherwise report a lost connection for a command that has finished.
+    /// Runs `operation`, ending it early when the VM process exits, when a booting guest passes its boot bound and, as
+    /// `watch` says, when the connection ends. `awaiting` names the operation in those errors.
     pub(super) async fn guarded<T>(
         &self,
         awaiting: &str,
-        watch_transport: bool,
+        watch: Watch,
         operation: impl Future<Output = Result<T>>,
     ) -> Result<T> {
         let transport_ended = async {
-            if watch_transport {
-                self.transport.ended().await
-            } else {
-                std::future::pending().await
+            match watch {
+                Watch::VmAndBoot => std::future::pending().await,
+                Watch::Transport | Watch::TransportBeforeStart => self.transport.ended().await,
             }
         };
         tokio::select! {
@@ -483,7 +493,13 @@ impl Inner {
             result = operation => result,
             end = self.vm.gone() => Err(self.ctx.vm_ended(awaiting, &end)),
             bound = self.boot.passed() => Err(self.ctx.bound_passed(awaiting, bound.limit)),
-            reason = transport_ended => Err(self.ctx.lost(awaiting, &reason)),
+            reason = transport_ended => {
+                let lost = self.ctx.lost(awaiting, &reason);
+                Err(match watch {
+                    Watch::TransportBeforeStart => not_started(lost),
+                    _ => lost,
+                })
+            }
         }
     }
 

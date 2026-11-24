@@ -49,7 +49,7 @@ use self::remote::Remote;
 use self::typed::Typed;
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
-use crate::access::session::{Inner, not_started};
+use crate::access::session::{Inner, Watch};
 use crate::guest::GuestOs;
 use crate::host::Host;
 use crate::progress::Progress;
@@ -132,21 +132,15 @@ fn guest_typed(guest: &dyn GuestOs, operated: &str, typed: &str) -> Typed {
 impl Sftp {
     /// Opens the SFTP subsystem twice on `inner`'s connection (the second channel carries only the rename extension).
     pub(super) fn open(inner: Arc<Inner>) -> Result<Sftp> {
-        let guard = inner.clone();
         let remote = runtime::run("opening the SFTP subsystem", async move {
-            guard
-                .guarded("opening the SFTP subsystem", true, Remote::connect(guard.clone()))
+            inner
+                .guarded(
+                    "opening the SFTP subsystem",
+                    Watch::TransportBeforeStart,
+                    Remote::connect(inner.clone()),
+                )
                 .await
-        })?;
-        // Only a connection that ended during the open is one a new connection helps; the VM exiting or the boot bound
-        // passing is not.
-        let remote = remote.map_err(|e| {
-            if e.kind() == ErrorKind::ConnectionLost && inner.transport_end().is_some() {
-                not_started(e)
-            } else {
-                e
-            }
-        })?;
+        })??;
         Ok(Sftp { remote })
     }
 
