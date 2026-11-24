@@ -1,8 +1,8 @@
-//! The crate's error type: a stable kind, a message, and an optional source.
+//! The crate's error type: a stable kind, a message, and an optional source and serial log.
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 #[path = "error_tests.rs"]
@@ -74,17 +74,57 @@ type Source = std::sync::Arc<dyn std::error::Error + Send + Sync + 'static>;
 #[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
+    /// The body, then `\nserial log: <path>` when `serial_log` is set. Only [`Error::render`] writes it.
     message: String,
+    /// The length of the body at the start of `message`.
+    body_len: usize,
     source: Option<Source>,
+    serial_log: Option<PathBuf>,
 }
 
 impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Error {
+        let message = message.into();
         Error {
             kind,
-            message: message.into(),
+            body_len: message.len(),
+            message,
             source: None,
+            serial_log: None,
         }
+    }
+
+    /// Makes `body`, followed by the `serial log:` line when there is a serial log, the message.
+    fn render(&mut self, mut body: String) {
+        self.body_len = body.len();
+        if let Some(path) = &self.serial_log {
+            body.push_str(&format!("\nserial log: {}", path.display()));
+        }
+        self.message = body;
+    }
+
+    /// Sets the serial log the error is about, replacing an earlier one. The message ends with its path.
+    pub(crate) fn with_serial_log(mut self, path: impl Into<PathBuf>) -> Error {
+        self.serial_log = Some(path.into());
+        let body = self.body().to_owned();
+        self.render(body);
+        self
+    }
+
+    pub(crate) fn serial_log(&self) -> Option<&Path> {
+        self.serial_log.as_deref()
+    }
+
+    /// The message without the `serial log:` line, for an error that is embedded in another one.
+    pub(crate) fn body(&self) -> &str {
+        &self.message[..self.body_len]
+    }
+
+    /// `text` appended to the message as it is. Kind, source and serial log stay.
+    pub(crate) fn with_appended(mut self, text: &str) -> Error {
+        let body = format!("{}{text}", self.body());
+        self.render(body);
+        self
     }
 
     /// Attaches the underlying error, reachable through [`std::error::Error::source`].
@@ -100,17 +140,17 @@ impl Error {
 
     /// This error as a `kind` failure of `context`: the message is `<context>: <this message>` and the source is this
     /// error's source, not this error.
-    pub(crate) fn with_context(self, kind: ErrorKind, context: impl fmt::Display) -> Error {
-        Error {
-            kind,
-            message: format!("{context}: {}", self.message),
-            source: self.source,
-        }
+    pub(crate) fn with_context(mut self, kind: ErrorKind, context: impl fmt::Display) -> Error {
+        let body = format!("{context}: {}", self.body());
+        self.kind = kind;
+        self.render(body);
+        self
     }
 
     /// This error with `step` after its message: what the person can do about it, or what came with it.
     pub(crate) fn with_step(mut self, step: impl fmt::Display) -> Error {
-        self.message = format!("{}; {step}", self.message);
+        let body = format!("{}; {step}", self.body());
+        self.render(body);
         self
     }
 
@@ -150,7 +190,8 @@ impl Error {
     /// `tail`, already the last lines of `what`, after the message; nothing when it is empty.
     pub(crate) fn append_tail(&mut self, what: &str, tail: &str) {
         if !tail.is_empty() {
-            self.message = format!("{}\nthe end of {what}:\n{tail}", self.message);
+            let body = format!("{}\nthe end of {what}:\n{tail}", self.body());
+            self.render(body);
         }
     }
 

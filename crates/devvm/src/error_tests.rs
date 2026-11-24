@@ -126,6 +126,95 @@ fn with_tail_of_empty_text_adds_nothing_and_keeps_the_source() {
     assert!(error.source().is_some(), "the source stays");
 }
 
+/// A marker error, as `access::session` puts on an operation that had not started.
+#[derive(Debug)]
+struct Marker;
+
+impl std::fmt::Display for Marker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("marker")
+    }
+}
+
+impl std::error::Error for Marker {}
+
+fn is_marked(error: &Error) -> bool {
+    error.source().is_some_and(|source| source.is::<Marker>())
+}
+
+#[skuld::test]
+fn an_error_with_a_serial_log_ends_its_message_with_that_path() {
+    let error = Error::new(ErrorKind::ConnectionLost, "the VM process exited").with_serial_log("/x/serial.log");
+    assert_eq!(error.message(), "the VM process exited\nserial log: /x/serial.log");
+    assert_eq!(
+        error.to_string(),
+        "connection-lost: the VM process exited\nserial log: /x/serial.log"
+    );
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/serial.log")));
+    assert_eq!(Error::new(ErrorKind::Io, "no log").serial_log(), None);
+}
+
+#[skuld::test]
+fn with_context_with_step_with_tail_and_clone_keep_the_serial_log_as_the_last_line() {
+    let base = Error::new(ErrorKind::ConnectionLost, "lost")
+        .with_source(Marker)
+        .with_serial_log("/x/serial.log");
+    let line = "\nserial log: /x/serial.log";
+    let cases = [
+        ("with_context", base.clone().with_context(ErrorKind::Io, "reading"), "reading: lost"),
+        ("with_step", base.clone().with_step("try again"), "lost; try again"),
+        (
+            "with_tail",
+            base.clone().with_tail("the log", "a\nb"),
+            "lost\nthe end of the log:\na\nb",
+        ),
+        (
+            "after_cleanup",
+            base.clone().after_cleanup("the file", Err("locked")),
+            "lost; cleaning up failed as well, so the file remains (locked)",
+        ),
+        ("together_with", base.clone().together_with("a second failure"), "lost; a second failure as well"),
+        ("clone", base.clone(), "lost"),
+    ];
+    for (name, error, body) in cases {
+        assert_eq!(error.message(), format!("{body}{line}"), "{name}");
+        assert_eq!(error.body(), body, "{name}");
+        assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/serial.log")), "{name}");
+        assert!(is_marked(&error), "{name}: the source stays");
+    }
+}
+
+#[skuld::test]
+fn body_has_no_serial_log_line() {
+    let error = Error::new(ErrorKind::Io, "cannot").with_serial_log("/x/serial.log");
+    assert_eq!(error.body(), "cannot");
+    assert_eq!(Error::new(ErrorKind::Io, "cannot").body(), "cannot");
+}
+
+#[skuld::test]
+fn with_serial_log_replaces_an_earlier_path() {
+    let error = Error::new(ErrorKind::Io, "cannot")
+        .with_serial_log("/x/first.log")
+        .with_serial_log("/y/second.log");
+    assert_eq!(error.message(), "cannot\nserial log: /y/second.log");
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/y/second.log")));
+}
+
+#[skuld::test]
+fn with_appended_keeps_kind_source_and_serial_log() {
+    let error = Error::new(ErrorKind::Unavailable, "launch failed")
+        .with_source(Marker)
+        .with_serial_log("/x/serial.log")
+        .with_appended("\nQEMU's output:\nnothing");
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(error.body(), "launch failed\nQEMU's output:\nnothing");
+    assert_eq!(
+        error.message(),
+        "launch failed\nQEMU's output:\nnothing\nserial log: /x/serial.log"
+    );
+    assert!(is_marked(&error));
+}
+
 /// An error with a message of its own and a source.
 #[derive(Debug)]
 struct Layer(&'static str, Option<Box<dyn std::error::Error + 'static>>);
