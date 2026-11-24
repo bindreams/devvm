@@ -189,6 +189,76 @@ fn a_failed_write_names_the_loss_that_arrived_behind_a_full_event_buffer() {
     }
 }
 
+/// A host sink that takes every write, counts flushes and refuses them when told to.
+#[derive(Default)]
+struct Flushing {
+    flushes: usize,
+    refuses: bool,
+}
+
+impl std::io::Write for Flushing {
+    fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+        Ok(chunk.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        if self.refuses {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the flush was refused",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[skuld::test]
+fn a_failed_stderr_write_names_the_status_and_loss_that_arrived_and_flushes_stdout_once() {
+    let (events, buffered) = tokio::sync::mpsc::channel(EVENT_BUFFER);
+    events.try_send(Event::Err(b"oops".to_vec())).unwrap();
+    let arrived = Arrived::default();
+    arrived.set_status(ExitStatus::Code(7));
+    arrived.lose(Error::new(ErrorKind::ConnectionLost, "the VM process exited"));
+    let mut out = Flushing::default();
+
+    let end = relay(buffered, &arrived, &mut out, &mut Refuses).unwrap();
+
+    match end {
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(status, Some(ExitStatus::Code(7)));
+            assert!(error.to_string().contains("the VM process exited"), "{error}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(out.flushes, 1, "the stdout sink may hold a partial line");
+}
+
+#[skuld::test]
+fn a_failed_flush_at_the_end_names_the_status_and_the_loss_that_arrived() {
+    let (events, buffered) = tokio::sync::mpsc::channel(EVENT_BUFFER);
+    events.try_send(Event::End(Ok(ExitStatus::Code(3)))).unwrap();
+    let arrived = Arrived::default();
+    arrived.set_status(ExitStatus::Code(3));
+    arrived.lose(Error::new(ErrorKind::ConnectionLost, "the VM process exited"));
+    let mut out = Flushing {
+        refuses: true,
+        ..Flushing::default()
+    };
+
+    let end = relay(buffered, &arrived, &mut out, &mut Flushing::default()).unwrap();
+
+    match end {
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(status, Some(ExitStatus::Code(3)));
+            assert!(error.to_string().contains("the flush was refused"), "{error}");
+            assert!(error.to_string().contains("the VM process exited"), "{error}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 #[skuld::test]
 fn the_first_loss_stays() {
     let arrived = Arrived::default();
