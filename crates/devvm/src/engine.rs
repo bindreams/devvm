@@ -224,10 +224,9 @@ impl Engine {
             return Ok(exit.clone());
         }
         let Some(process) = VmProcess::attach(&machine.process)? else {
-            return Err(Error::new(
-                ErrorKind::ConnectionLost,
-                format!("the VM process exited (serial log: {})", machine.serial_log.display()),
-            ));
+            return Err(
+                Error::new(ErrorKind::ConnectionLost, "the VM process exited").with_serial_log(&machine.serial_log)
+            );
         };
         let exit = VmExit::watch(process)?;
         exits.push((machine.process.clone(), exit.clone()));

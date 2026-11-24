@@ -111,6 +111,10 @@ impl Error {
         self
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the code that keeps a failed VM's serial log")
+    )]
     pub(crate) fn serial_log(&self) -> Option<&Path> {
         self.serial_log.as_deref()
     }

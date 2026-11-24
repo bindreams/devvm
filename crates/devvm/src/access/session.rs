@@ -352,10 +352,7 @@ pub(super) struct Context {
 
 impl Context {
     pub(super) fn lost(&self, awaiting: &str, why: &str) -> Error {
-        Error::new(
-            ErrorKind::ConnectionLost,
-            format!("{awaiting}: {why} (serial log: {})", self.serial_log.display()),
-        )
+        Error::new(ErrorKind::ConnectionLost, format!("{awaiting}: {why}")).with_serial_log(&self.serial_log)
     }
 
     fn vm_ended(&self, awaiting: &str, end: &WatchEnd) -> Error {
@@ -526,11 +523,9 @@ impl Inner {
         not_started(match cause {
             russh::Error::ChannelOpenFailure(_) => Error::new(
                 ErrorKind::Io,
-                format!(
-                    "{awaiting}: the channel could not be opened while the connection is up ({cause}) (serial log: {})",
-                    self.ctx.serial_log.display()
-                ),
-            ),
+                format!("{awaiting}: the channel could not be opened while the connection is up ({cause})"),
+            )
+            .with_serial_log(&self.ctx.serial_log),
             _ => self.connection_ended(&format!("{awaiting}: the channel could not be opened")),
         })
     }

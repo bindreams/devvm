@@ -285,11 +285,28 @@ fn a_boot_id_that_stayed_unreadable_names_the_last_failed_read_the_bound_and_the
     for part in [
         "boot-0",
         "boot bound of 1m 30s",
-        "the last read failed: reading the guest's boot id with `cat` ended with exit code 1",
-        &target.serial_log.display().to_string(),
+        "(the last read failed: reading the guest's boot id with `cat` ended with exit code 1)",
     ] {
         assert!(error.message().contains(part), "{part}: {error}");
     }
+    assert_eq!(error.serial_log(), Some(target.serial_log.as_path()), "{error}");
+    assert!(!error.body().contains("serial log"), "{error}");
+}
+
+#[skuld::test]
+fn a_failed_read_that_names_the_serial_log_is_embedded_without_it(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let target = target_at(&fx, home);
+    let read = Error::new(ErrorKind::ConnectionLost, "reading the boot id").with_serial_log(&target.serial_log);
+    let bound = BootBound::start(Duration::from_secs(90)).unwrap();
+
+    let error = boot_id_unchanged(&target, "boot-0", bound, Some(&read));
+
+    assert_eq!(error.message().matches("serial log:").count(), 1, "{error}");
+    assert!(
+        error.message().contains("(the last read failed: reading the boot id)"),
+        "{error}"
+    );
 }
 
 #[skuld::test]

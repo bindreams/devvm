@@ -313,11 +313,9 @@ async fn pump(
                 return arrived.status().map(Some).ok_or_else(|| {
                     Error::new(
                         ErrorKind::NoExitStatus,
-                        format!(
-                            "the channel for {awaiting} closed without an exit status (serial log: {})",
-                            inner.ctx.serial_log.display()
-                        ),
+                        format!("the channel for {awaiting} closed without an exit status"),
                     )
+                    .with_serial_log(&inner.ctx.serial_log)
                 });
             }
             // Success, Eof and the requests only a client sends.

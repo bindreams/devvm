@@ -370,6 +370,22 @@ fn the_log_an_attached_machine_quotes_is_beside_the_serial_log(#[fixture(unicode
     world.end_qemu();
 }
 
+#[skuld::test]
+fn an_exited_machine_sets_its_serial_log_and_does_not_print_it_in_its_text(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home);
+    let machine = world.attached();
+
+    let error = machine.exited("gone");
+
+    assert_eq!(
+        error.serial_log(),
+        Some(world.dir.join("serial.log").as_path()),
+        "{error}"
+    );
+    assert!(!error.body().contains("serial log"), "{error}");
+    world.end_qemu();
+}
+
 /// Appends `text` to the file at `path`, as a launch of QEMU appends to its log.
 fn append(path: &Path, text: &str) {
     use std::io::Write;
