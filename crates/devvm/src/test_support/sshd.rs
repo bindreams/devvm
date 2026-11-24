@@ -311,8 +311,9 @@ impl TestSshd {
 
     /// Blocks until a client has closed the channel `command` was run on, which is what a command that is not waited
     /// for observes. `command` is the text the client sent; it may be waited for before the command arrives, and a text
-    /// that is never sent makes this wait for ever. Panics when the server has received that text more than once: the
-    /// channel meant would be ambiguous.
+    /// that is never sent makes this wait for ever. Panics when, at one of its checks, the server has received that
+    /// text on more than one channel: the channel meant would be ambiguous. A second send that arrives after the wait
+    /// has returned goes unseen.
     pub fn wait_for_close_of(&self, command: &str) {
         wait_until(&self.state.closed_notify, || {
             let channels: Vec<ChannelKey> = self
