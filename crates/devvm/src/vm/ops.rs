@@ -39,22 +39,24 @@ pub(super) fn run_to(
             engine.progress().warn(lost.message());
             Ok(status)
         }
-        ExecEnd::HostOutputClosed { error, status: None } => Err(Error::io(
-            ErrorKind::Io,
-            "writing the guest command's output failed, so the guest command was stopped",
-            error,
-        )),
         ExecEnd::HostOutputClosed {
             error,
-            status: Some(status),
-        } => Err(Error::io(
-            ErrorKind::Io,
-            format!(
-                "writing the guest command's output failed after the guest command ended with {}",
-                status.describe()
-            ),
-            error,
-        )),
+            status,
+            serial_log,
+        } => {
+            let context = match status {
+                None => "writing the guest command's output failed, so the guest command was stopped".to_owned(),
+                Some(status) => format!(
+                    "writing the guest command's output failed after the guest command ended with {}",
+                    status.describe()
+                ),
+            };
+            let error = Error::io(ErrorKind::Io, context, error);
+            Err(match serial_log {
+                Some(path) => error.with_serial_log(path),
+                None => error,
+            })
+        }
     }
 }
 
