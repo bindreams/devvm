@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod lines;
 mod log;
+pub use crate::text::escape_controls;
 pub use lines::{LineProgress, Look, VERBOSE_VAR, verbose_from_env};
 pub use log::FileLog;
 
@@ -287,21 +288,4 @@ pub fn paint(on: bool, colour: Colour, text: &str) -> String {
 /// `text` without ANSI escape sequences (colours, cursor moves), which a tool prints for a terminal.
 pub fn strip_ansi(text: &str) -> Cow<'_, str> {
     console::strip_ansi_codes(text)
-}
-
-/// `text` with each control character written as an escape (`\r`, `\u{1b}`), so it stays on one line and cannot move a
-/// terminal's cursor. Everything else, a backslash included, is unchanged.
-pub fn escape_controls(text: &str) -> Cow<'_, str> {
-    if !text.chars().any(char::is_control) {
-        return Cow::Borrowed(text);
-    }
-    let mut escaped = String::with_capacity(text.len());
-    for c in text.chars() {
-        if c.is_control() {
-            escaped.extend(c.escape_debug());
-        } else {
-            escaped.push(c);
-        }
-    }
-    Cow::Owned(escaped)
 }
