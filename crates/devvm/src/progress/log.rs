@@ -88,7 +88,8 @@ impl FileLog {
             stamp(clock.now(), TIME),
             env!("CARGO_PKG_VERSION")
         );
-        let path = create_named(dir, &*clock, RUN_LOG, header.as_bytes()).map_err(|(path, e)| cannot_write(&path, e))?;
+        let path =
+            create_named(dir, &*clock, RUN_LOG, header.as_bytes()).map_err(|(path, e)| cannot_write(&path, e))?;
         let open = || {
             OpenOptions::new()
                 .append(true)
