@@ -62,7 +62,6 @@ const ARCHIVE_FIRMWARE: &[&str] = &[
 const VERSIONED_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64"];
 /// The tool every install has: one without it is an install that lost it, and is extracted again.
 const REQUIRED_TOOL: &str = "qemu-img";
-/// The characters of the zip's sha256 an install's directory name carries.
 const INSTALL_HASH_LEN: usize = 12;
 
 // Manifest ============================================================================================================
@@ -280,7 +279,6 @@ impl Source {
             .map_err(|e| Error::new(e.kind(), e.message().to_owned()))
     }
 
-    /// `<qemu>/<install name>`.
     fn published(&self, entry: &ManifestEntry) -> PathBuf {
         self.dirs.qemu().join(install_name(&entry.qemu_version, &entry.sha256))
     }
@@ -448,10 +446,9 @@ impl Source {
         Ok(())
     }
 
-    /// What housekeeping removes from `qemu`: the published installs but `keep`, which are directories named like an
-    /// install ([`is_install_name`]), all of the cache that devvm made besides `.extract-` names (a configured
-    /// `qemu.path` is never under it), and whether an `.extract-` leftover is there. No install is listed on a host that
-    /// cannot tell an install is in use. A listing that fails ends at the failure, with one warning.
+    /// What housekeeping would remove from `qemu`: the directories named like an install ([`is_install_name`]) other
+    /// than `keep`, and whether an `.extract-` leftover exists. No install is listed on a host that cannot tell one is in
+    /// use; a listing that fails ends with one warning.
     fn surplus(&self, qemu: &Path, keep: &Path) -> Surplus {
         let mut surplus = Surplus {
             installs: Vec::new(),
@@ -490,13 +487,10 @@ impl Source {
 
     /// Removes the superseded `installs` ([`Source::surplus`]) with `remove`, with the extraction lock held.
     ///
-    /// An install is first renamed to an `.extract-` name, which nothing resolves. The rename is the test for "in use":
-    /// it is refused with one of the host's codes ([`Host::rename_refused_by_open_file`]) while something under the
-    /// directory is held open or the directory is open itself (a working directory), and the install stays as it was.
-    /// That is recorded at debug level and is no warning, unless the code is the permissions' ([`Source::refused_as_in_use`]).
-    /// An install that is no longer there (the list was made before the lock was taken) is passed over; any other
-    /// failure is a warning. Once renamed, the install is gone as far as every devvm is concerned, and what the delete
-    /// cannot remove is swept by the next sweep. A failure on one install does not stop the others.
+    /// Each install is renamed to an `.extract-` name, which nothing resolves; the rename is the in-use test: a refusal
+    /// with one of the host's codes ([`Host::rename_refused_by_open_file`]) leaves the install as it was, recorded at
+    /// debug level and no warning, unless its permissions are what refused ([`Source::refused_as_in_use`]). Other
+    /// failures warn. What the delete cannot remove is swept later.
     fn prune_superseded(&self, qemu: &Path, installs: &[PathBuf], remove: &dyn Fn(&Path) -> std::io::Result<()>) {
         for path in installs {
             let removing = match quarantine_path(qemu, ".extract") {
@@ -557,7 +551,6 @@ impl Source {
         let pruned = (|| -> Result<()> {
             let mut lock = FileLock::open(&qemu.join(".extract.lock"))?;
             if lock.try_lock(Mode::Exclusive)? {
-                // Every `.extract-` directory is created and renamed from under this lock, so none is in progress.
                 self.sweep_extractions(&qemu)?;
                 self.prune_superseded(&qemu, &surplus.installs, &crate::host::remove_tree);
             }

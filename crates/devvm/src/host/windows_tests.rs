@@ -520,8 +520,8 @@ fn refused_with_a_code_the_host_names(result: std::io::Result<()>) {
     assert!(WindowsHost.rename_refused_by_open_file().contains(&code), "{error:?}");
 }
 
-/// Measured on Windows 11 (build 26100): renaming the directory above the held one fails with 5
-/// (`ERROR_ACCESS_DENIED`), renaming or removing the held one with 32 (`ERROR_SHARING_VIOLATION`).
+/// Renaming the directory above the held one fails with 5 (`ERROR_ACCESS_DENIED`), renaming or removing the held one
+/// with 32 (`ERROR_SHARING_VIOLATION`).
 #[skuld::test]
 fn a_held_directory_keeps_itself_and_the_directory_above_it_from_being_renamed_or_removed(
     #[fixture(unicode_home)] home: &Path,

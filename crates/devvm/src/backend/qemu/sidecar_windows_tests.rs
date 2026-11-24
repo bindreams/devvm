@@ -122,8 +122,8 @@ fn open_as_working_directory(dir: &Path) -> std::fs::File {
         .unwrap()
 }
 
-/// Measured on Windows 11 (build 26100) on 2026-11-24: the rename of a directory that is open as a working directory
-/// fails with `ERROR_SHARING_VIOLATION` (32), where one with a file open inside fails with `ERROR_ACCESS_DENIED` (5).
+/// The rename of a directory that is open as a working directory fails with `ERROR_SHARING_VIOLATION` (32), where one
+/// with a file open inside fails with `ERROR_ACCESS_DENIED` (5).
 #[skuld::test]
 fn renaming_a_directory_held_as_a_working_directory_fails_with_a_code_the_host_names(
     #[fixture(unicode_home)] home: &Path,
