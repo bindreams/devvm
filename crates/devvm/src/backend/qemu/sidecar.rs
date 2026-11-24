@@ -230,16 +230,6 @@ impl Source {
         }
     }
 
-    /// The install if it is already there; never downloads.
-    pub(crate) fn existing(&self) -> Result<Option<QemuInstall>> {
-        if let Some(dir) = &self.config()?.qemu_path {
-            return configured(dir, Arch::host()).map(Some);
-        }
-        let entry = self.entry()?;
-        let published = self.published(entry);
-        Ok(published.is_dir().then(|| self.install_at(&published, entry)))
-    }
-
     fn download(&self) -> Result<QemuInstall> {
         let entry = self.entry()?;
         let published = self.published(entry);
@@ -503,13 +493,5 @@ impl LazyInstall {
     /// The install, resolved once. A failure is not cached.
     pub(crate) fn get(&self) -> Result<Arc<QemuInstall>> {
         self.resolved.get(|| Ok(Arc::new(self.source.resolve()?))).cloned()
-    }
-
-    /// The install if it is already there; never downloads, and does not wait for a download in progress.
-    pub(crate) fn existing(&self) -> Result<Option<Arc<QemuInstall>>> {
-        if let Some(install) = self.resolved.built() {
-            return Ok(Some(install.clone()));
-        }
-        Ok(self.source.existing()?.map(Arc::new))
     }
 }

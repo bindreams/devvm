@@ -4,7 +4,7 @@ use super::args::ArchFiles;
 use super::sidecar::LazyInstall;
 use crate::backend::{Check, Detail};
 use crate::store::fetch::hash_file;
-use crate::{Arch, Error, ErrorKind, Result, Sha256};
+use crate::{Arch, Result, Sha256};
 
 #[cfg(test)]
 #[path = "checks_tests.rs"]
@@ -12,7 +12,7 @@ mod checks_tests;
 
 /// Whether QEMU can be had: the line that `doctor` prints and `availability` reports. It passes when the manifest has a
 /// build for this target, which a launch downloads if it is not cached, or when the configured `qemu.path` is accepted
-/// by the check a launch applies (`LazyInstall::existing`). Nothing is downloaded, and no cache is looked at. Only
+/// by the check a launch applies (`LazyInstall::get`). Nothing is downloaded, and no cache is looked at. Only
 /// [`Detail::Full`] hashes the configured QEMU, which reads the whole executable.
 pub(super) fn qemu_check(install: &LazyInstall, detail: Detail) -> Check {
     Check {
@@ -29,14 +29,13 @@ fn qemu_outcome(install: &LazyInstall, detail: Detail) -> Result<String> {
             entry.qemu_version, entry.sha256
         ));
     }
-    let qemu = install
-        .existing()?
-        .ok_or_else(|| Error::new(ErrorKind::Internal, "a configured qemu.path gave no install".to_owned()))?;
+    // A configured path is never downloaded: this is the check a launch applies to it.
+    let qemu = install.get()?;
     match detail {
         Detail::Brief => Ok(format!("QEMU in {}", qemu.bin.display())),
         Detail::Full => {
             let system = ArchFiles::of(Arch::host()).system;
-            // Informational: whether the line passes is `existing()`'s answer alone, as for `Detail::Brief`.
+            // Informational: whether the line passes is `get()`'s answer alone, as for `Detail::Brief`.
             let hash = match hash_file(&qemu.tool(&system)) {
                 Ok(bytes) => Sha256::from_bytes(bytes).to_string(),
                 Err(e) => format!("unavailable ({})", e.message()),
