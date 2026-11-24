@@ -126,6 +126,9 @@ impl ProbeReply {
 /// The text of a Windows guest's readiness probe that selects its replies.
 use crate::guest::windows::ready::READY_PROBE;
 
+/// A channel of a connection: the connection's index and the channel's number on it.
+type ChannelKey = (usize, ChannelId);
+
 struct Trusted {
     host: PrivateKey,
     client: PublicKey,
@@ -138,12 +141,14 @@ pub(crate) struct State {
     bad: PrivateKey,
     pub(crate) options: SshdOptions,
     connections: AtomicUsize,
-    closed: Mutex<HashSet<ChannelId>>,
+    /// The channels a client has closed. A channel number is a connection's own, so it is kept with the connection.
+    closed: Mutex<HashSet<ChannelKey>>,
+    /// Fired when a channel closes and when an `exec` arrives: what [`TestSshd::wait_for_close_of`] re-checks.
     closed_notify: Notify,
     /// How many `exec` commands the server has received.
     started: AtomicUsize,
-    /// Every `exec` command the server has received, in order.
-    commands: Mutex<Vec<String>>,
+    /// Every `exec` command the server has received, in order, with the channel it came on.
+    commands: Mutex<Vec<(String, ChannelKey)>>,
     started_notify: Notify,
     /// How many commands dispatched to `script` have returned.
     returned: AtomicUsize,
@@ -304,16 +309,19 @@ impl TestSshd {
         self.state.connections.load(Ordering::SeqCst)
     }
 
-    /// Blocks until a client has closed a channel, which is what a command that is not waited for observes.
-    pub fn wait_for_channel_close(&self) {
+    /// Blocks until a client has closed the channel `command` was run on, which is what a command that is not waited
+    /// for observes. `command` is the text the client sent; of several commands with that text, any one's close counts.
+    pub fn wait_for_close_of(&self, command: &str) {
         wait_until(&self.state.closed_notify, || {
-            !self.state.closed.lock().unwrap().is_empty()
+            let closed = self.state.closed.lock().unwrap();
+            let commands = self.state.commands.lock().unwrap();
+            commands.iter().any(|(sent, key)| sent == command && closed.contains(key))
         });
     }
 
     /// Every `exec` command the server has received, in order, as the client sent it.
     pub fn commands(&self) -> Vec<String> {
-        self.state.commands.lock().unwrap().clone()
+        self.state.commands.lock().unwrap().iter().map(|(command, _)| command.clone()).collect()
     }
 
     /// Blocks until the server has received `count` `exec` commands in total: the commands are then in flight on the
@@ -556,7 +564,7 @@ impl Handler for Connection {
     }
 
     async fn channel_close(&mut self, channel: ChannelId, _session: &mut Session) -> Result<(), Self::Error> {
-        self.state.closed.lock().unwrap().insert(channel);
+        self.state.closed.lock().unwrap().insert((self.index, channel));
         self.state.closed_notify.notify_waiters();
         Ok(())
     }
@@ -631,10 +639,16 @@ impl Handler for Connection {
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
         let command = String::from_utf8_lossy(data).into_owned();
-        self.state.commands.lock().unwrap().push(command.clone());
+        self.state
+            .commands
+            .lock()
+            .unwrap()
+            .push((command.clone(), (self.index, channel)));
         self.state.started.fetch_add(1, Ordering::SeqCst);
         self.state.started_notify.notify_waiters();
+        self.state.closed_notify.notify_waiters();
         let handle = session.handle();
+        let connection = self.index;
         let words: Vec<&str> = command.split_whitespace().collect();
         match words.as_slice() {
             // Stops this connection's loop: nothing is read or written from now on.
@@ -653,7 +667,7 @@ impl Handler for Connection {
                 let state = self.state.clone();
                 runtime::spawn(async move {
                     let _returned = ScriptReturn(state.clone());
-                    script(state, handle, channel, command).await;
+                    script(state, handle, (connection, channel), command).await;
                 })
                 .expect("the SSH runtime is running");
             }
@@ -753,7 +767,8 @@ async fn finish(handle: &russh::server::Handle, channel: ChannelId, status: u32)
     let _ = handle.close(channel).await;
 }
 
-async fn script(state: Arc<State>, handle: russh::server::Handle, channel: ChannelId, command: String) {
+async fn script(state: Arc<State>, handle: russh::server::Handle, key: ChannelKey, command: String) {
+    let (_, channel) = key;
     // A shell runs its script: one of the commands above if it is one, else it succeeds, as a shell whose script this
     // server cannot run.
     let (command, shell) = match command.split_once(char::is_whitespace) {
@@ -817,7 +832,7 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
         ["write-forever"] => {
             let chunk = vec![b'y'; 1024];
             loop {
-                if state.closed.lock().unwrap().contains(&channel) || handle.data(channel, chunk.clone()).await.is_err()
+                if state.closed.lock().unwrap().contains(&key) || handle.data(channel, chunk.clone()).await.is_err()
                 {
                     return;
                 }
