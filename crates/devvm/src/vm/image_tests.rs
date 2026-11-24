@@ -382,19 +382,21 @@ fn a_failed_reconnect_returns_the_original_failure_with_its_serial_log_and_the_r
 }
 
 #[skuld::test]
-fn two_operations_that_failed_on_the_same_stale_session_share_one_new_connection(#[fixture(unicode_home)] home: &Path) {
+fn each_operation_that_failed_on_the_same_stale_session_makes_its_own_new_connection(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let fx = engine_fixture(home, memory());
     let instance = short_bound_instance(&fx, home);
     let vm = vm_over(reached(&instance), instance);
-    let (_, stale, op) = vm.reached().unwrap();
+    let (_, _, op) = vm.reached().unwrap();
     let before = fx.server.connections();
 
-    let first = vm.reconnect(&op, &stale).unwrap();
-    let second = vm.reconnect(&op, &stale).unwrap();
+    vm.reconnect(&op).unwrap();
+    vm.reconnect(&op).unwrap();
 
-    assert_eq!(fx.server.connections() - before, 1, "the second reuses the first's");
-    assert!(second.is_same(&first));
-    assert!(!first.is_same(&stale));
+    // A server may limit the sessions of one connection, so a connection is not shared by what failed on another.
+    assert_eq!(fx.server.connections() - before, 2);
+    assert!(vm.session.lock().unwrap().as_ref().is_some_and(|s| s.is_alive()));
 }
 
 #[skuld::test]
@@ -402,14 +404,14 @@ fn a_failed_reconnect_leaves_no_cached_session(#[fixture(unicode_home)] home: &P
     let fx = engine_fixture(home, memory());
     let instance = short_bound_instance(&fx, home);
     let vm = vm_over(reached(&instance), instance);
-    let (_, stale, op) = vm.reached().unwrap();
+    let (_, _, op) = vm.reached().unwrap();
     let dir = vm.instance().dir();
     // A record that cannot be read: the reconnect fails before a connection is tried.
     let file = dir.path().join(RECORD_FILE);
     let record = std::fs::read(&file).unwrap();
     std::fs::write(&file, b"not json").unwrap();
 
-    let failed = vm.reconnect(&op, &stale);
+    let failed = vm.reconnect(&op);
 
     std::fs::write(&file, record).unwrap();
     assert!(failed.is_err(), "the record is unreadable");

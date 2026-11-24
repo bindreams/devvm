@@ -357,7 +357,7 @@ impl Vm {
         mut attempt: impl FnMut(&SshSession) -> Result<T>,
     ) -> Result<T> {
         match attempt(session) {
-            Err(first) if is_not_started(&first) => match self.reconnect(op, session) {
+            Err(first) if is_not_started(&first) => match self.reconnect(op) {
                 Ok(fresh) => attempt(&fresh),
                 Err(failed) => Err(first.together_with(format_args!("connecting again failed ({failed})"))),
             },
@@ -365,19 +365,18 @@ impl Vm {
         }
     }
 
-    /// The cached session in place of `failed`, which an operation found unable to serve it: one that another
-    /// operation put there already if it is alive, otherwise a new connection to the guest. A failure leaves no cached
-    /// session.
-    fn reconnect(&self, op: &OpShared, failed: &SshSession) -> Result<SshSession> {
-        let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(current) = slot.as_ref().filter(|s| !s.is_same(failed) && s.is_alive()) {
-            return Ok(current.clone());
-        }
-        *slot = None;
+    /// A new connection to the guest, which becomes the cached session: the one stored last stays. A failure leaves no
+    /// cached session. Each operation that failed makes its own, as a server may limit the sessions of one connection;
+    /// the lock is not held while connecting.
+    fn reconnect(&self, op: &OpShared) -> Result<SshSession> {
+        // Cleared before anything can fail, so a stale session is not left cached.
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = None;
         let instance = self.instance();
         let dir = instance.dir();
         let record = read_record(&instance.engine, dir, op)?;
-        Ok(slot.insert(ops::reach(&instance.engine, dir, &record, op)?.1).clone())
+        let fresh = ops::reach(&instance.engine, dir, &record, op)?.1;
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = Some(fresh.clone());
+        Ok(fresh)
     }
 
     /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives. As [`Instance::run_to`].
