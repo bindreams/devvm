@@ -354,6 +354,7 @@ fn a_run_step_whose_session_is_lost_names_the_step_and_its_command(#[fixture(uni
     no_instance_or_build_is_left(&fx);
 }
 
+// A step whose channel closes without a status stands in for a VM that ends during the step: both errors name the serial log.
 #[skuld::test]
 fn a_failed_build_step_names_a_serial_log_that_exists_after_the_build_returns(#[fixture(unicode_home)] home: &Path) {
     let script: GuestScript = Arc::new(|_, spec, _| {
