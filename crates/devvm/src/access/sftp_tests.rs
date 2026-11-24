@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use russh_sftp::protocol::StatusCode;
 
@@ -335,7 +335,13 @@ const MTIME: u64 = 1_000_000_000;
 
 /// Sets the time of a file or a directory; negative is before 1970.
 fn set_time(path: &Path, secs: i64) {
-    filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(secs, 0)).unwrap();
+    let magnitude = Duration::from_secs(secs.unsigned_abs());
+    let time = if secs < 0 {
+        UNIX_EPOCH - magnitude
+    } else {
+        UNIX_EPOCH + magnitude
+    };
+    crate::host::set_modified(path, time).unwrap();
 }
 
 fn set_mtime(path: &Path, secs: u64) {

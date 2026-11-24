@@ -224,12 +224,7 @@ fn the_iso_line_rehashes_each_known_iso_and_names_a_changed_one(#[fixture(unicod
     let mut bytes = std::fs::read(&changed).unwrap();
     *bytes.last_mut().unwrap() ^= 0xff;
     std::fs::write(&changed, bytes).unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&changed)
-        .unwrap()
-        .set_modified(mtime)
-        .unwrap();
+    crate::host::set_modified(&changed, mtime).unwrap();
 
     let checks = iso_checks(&memo, &TestHost, &progress);
     assert_eq!(checks.len(), 2);
