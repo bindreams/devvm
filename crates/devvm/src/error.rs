@@ -159,7 +159,7 @@ impl Error {
     /// This error with the last [`TAIL_LINES`] lines of the file at `path`, which `what` names, after its message, as
     /// [`Error::with_tail`] does: the file may be gone, with its directory, when the error is read. A missing file
     /// ([`is_absent`]) or an empty one adds nothing; a file that cannot be read adds `(cannot be read: <error>)`. The
-    /// file is streamed, and a line longer than [`TAIL_LINE_BYTES`] keeps its end.
+    /// file is streamed, and a line longer than [`TAIL_LINE_BYTES`] shows `...` and its end.
     pub(crate) fn with_log_tail(mut self, what: &str, path: &Path) -> Error {
         match tail_of_file(path) {
             Ok(tail) => self.append_tail(what, &tail),
@@ -209,6 +209,18 @@ fn keep(lines: &mut VecDeque<Vec<u8>>, line: Vec<u8>) {
     lines.push_back(line);
 }
 
+/// `line`, which is the end of a longer one if `cut`: without the bytes of a character whose start was cut off, and
+/// with `...` before it.
+fn marked(line: Vec<u8>, cut: bool) -> Vec<u8> {
+    if !cut {
+        return line;
+    }
+    let whole = line.iter().position(|&byte| byte & 0xC0 != 0x80).unwrap_or(line.len());
+    let mut marked = b"...".to_vec();
+    marked.extend_from_slice(&line[whole..]);
+    marked
+}
+
 /// The last [`TAIL_LINES`] lines of the file at `path`, read in one pass without holding the file.
 fn tail_of_file(path: &Path) -> io::Result<String> {
     tail_of(BufReader::new(std::fs::File::open(path)?))
@@ -218,6 +230,8 @@ fn tail_of_file(path: &Path) -> io::Result<String> {
 fn tail_of(mut file: impl BufRead) -> io::Result<String> {
     let mut lines: VecDeque<Vec<u8>> = VecDeque::with_capacity(TAIL_LINES);
     let mut line: Vec<u8> = Vec::new();
+    // Whether the start of `line` was dropped to keep it under the cap.
+    let mut cut = false;
     // Whether bytes of a line that has not ended were seen.
     let mut open = false;
     loop {
@@ -235,19 +249,22 @@ fn tail_of(mut file: impl BufRead) -> io::Result<String> {
         };
         open = true;
         line.extend_from_slice(part);
-        line.drain(..line.len().saturating_sub(TAIL_LINE_BYTES));
+        let excess = line.len().saturating_sub(TAIL_LINE_BYTES);
+        line.drain(..excess);
+        cut |= excess > 0;
         let used = ended.unwrap_or(chunk.len());
         file.consume(used);
         if ended.is_some() {
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            keep(&mut lines, std::mem::take(&mut line));
+            keep(&mut lines, marked(std::mem::take(&mut line), cut));
+            cut = false;
             open = false;
         }
     }
     if open {
-        keep(&mut lines, line);
+        keep(&mut lines, marked(line, cut));
     }
     let lines: Vec<String> = lines
         .iter()

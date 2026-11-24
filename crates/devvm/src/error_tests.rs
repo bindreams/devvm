@@ -1,7 +1,7 @@
 use std::error::Error as _;
 use std::path::Path;
 
-use crate::error::{Error, ErrorKind, tail_of};
+use crate::error::{Error, ErrorKind, TAIL_LINE_BYTES, tail_of};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -173,6 +173,23 @@ fn with_log_tail_of_a_file_with_one_huge_unterminated_line_keeps_the_end(#[fixtu
         "the huge line is cut: {} bytes",
         message.len()
     );
+}
+
+#[skuld::test]
+fn a_cut_line_of_a_log_starts_with_dots_and_whole_characters(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    // The line is longer than the cap, which is not a multiple of 3: the cut falls inside a 3-byte character.
+    std::fs::write(&log, "\u{20ac}".repeat(4000)).unwrap();
+    let error = failed().with_log_tail("the serial log", &log);
+    let (_, line) = error.message().split_once("the end of the serial log:\n").unwrap();
+    let kept = line.strip_prefix("...").unwrap_or_else(|| panic!("{line:.20}"));
+    assert!(!kept.is_empty() && kept.chars().all(|c| c == '\u{20ac}'), "{line:.20}");
+    assert!(kept.len() <= TAIL_LINE_BYTES);
+
+    // A line that fits is not marked.
+    std::fs::write(&log, "short\n").unwrap();
+    let error = failed().with_log_tail("the serial log", &log);
+    assert!(error.message().ends_with("\nshort"), "{}", error.message());
 }
 
 /// A reader whose first fill is interrupted, as a read can be by a signal.
