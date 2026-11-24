@@ -326,7 +326,7 @@ fn a_failure_of_the_backend_that_is_not_an_unreadable_record_passes_through_find
     assert_eq!(error.message(), refused.message(), "no step is added");
 }
 
-// The holder of the exclusive op lock ============================================================================
+// The holder of the exclusive op lock =================================================================================
 
 /// A handle on the instance `dir` that reports to `progress`: another devvm command on the same instance.
 fn another_command(fx: &Fixture, dir: &InstanceDir, progress: Arc<dyn Progress>) -> InstanceDir {
