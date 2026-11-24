@@ -377,8 +377,11 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_run_to(#[f
     vm.run_to(&Command::new(["echo", "after"]), &mut out, &mut Vec::new())
         .unwrap();
 
-    assert_eq!(out, b"after
-");
+    assert_eq!(
+        out,
+        b"after
+"
+    );
     assert_eq!(fx.server.connections() - before, 1);
     let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
     assert_eq!(sent, 1, "the command was sent once");

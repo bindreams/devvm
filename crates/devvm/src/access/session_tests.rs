@@ -813,7 +813,10 @@ fn a_channel_open_that_fails_by_the_session_task_ending_is_a_lost_connection_bef
 
         assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{cause}: {error}");
         assert!(is_not_started(&error), "{cause}: {error}");
-        assert!(!error.message().contains("while the connection is up"), "{cause}: {error}");
+        assert!(
+            !error.message().contains("while the connection is up"),
+            "{cause}: {error}"
+        );
     }
 }
 
