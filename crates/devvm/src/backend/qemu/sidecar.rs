@@ -303,6 +303,7 @@ impl Source {
         if let Some(install) = self.holding(&published, entry)? {
             return Ok(install);
         }
+        self.clear_published(&qemu, &published)?;
 
         let task = self
             .progress
@@ -335,10 +336,10 @@ impl Source {
                 ));
             }
         }
-        // Publishing happens only under the extraction lock, after the re-check above: nobody else has published it.
+        // Under the extraction lock, with the name cleared above: nothing else has taken it since.
         debug_assert!(
             !published.is_dir(),
-            "{} appeared under the extraction lock",
+            "{} was taken under the extraction lock after it was cleared",
             published.display()
         );
         std::fs::rename(staging.path(), &published).map_err(|e| {
@@ -358,6 +359,27 @@ impl Source {
         })?;
         self.prune_superseded(&qemu, &published);
         Ok(install)
+    }
+
+    /// Frees the name `published` for the extraction about to be published there, with the extraction lock held and
+    /// the install not found by [`Source::holding`]: whatever is at the name is an install that lost its tool (a
+    /// scanner quarantined it, a user deleted it) and is no use. It is renamed to an `.extract-` name and swept, so
+    /// nothing is left half-removed under the install's name.
+    fn clear_published(&self, qemu: &Path, published: &Path) -> Result<()> {
+        let present = crate::host::symlink_metadata_if_present(published)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", published.display()), e))?;
+        if present.is_none() {
+            return Ok(());
+        }
+        let aside = quarantine_path(qemu, ".extract")?;
+        std::fs::rename(published, &aside).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot move the incomplete {} aside", published.display()),
+                e,
+            )
+        })?;
+        self.sweep_extractions(qemu)
     }
 
     /// Under the extraction lock no extraction runs, so every `.extract-*` directory is left over by a killed devvm. One

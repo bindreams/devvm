@@ -510,6 +510,22 @@ fn a_stale_extraction_directory_is_removed_by_the_next_resolve(#[fixture(unicode
     assert!(!stale.exists(), "{:?}", entries(&world.dirs.qemu()));
 }
 
+#[skuld::test]
+fn an_install_that_lost_its_tool_is_extracted_again(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let lost = world.source.resolve().unwrap().tool("qemu-img");
+    std::fs::remove_file(&lost).unwrap();
+
+    let install = world.source.resolve().unwrap();
+
+    assert!(install.tool("qemu-img").is_file());
+    assert!(install.share.join("edk2-x86_64-code.fd").is_file());
+    assert_eq!(visible(&qemu).len(), 1, "{:?}", entries(&qemu));
+    let all = entries(&qemu);
+    assert!(!all.iter().any(|name| name.starts_with(".extract-")), "{all:?}");
+}
+
 /// A published install of an older build, as an earlier devvm left it: `bin/` and `share/` under `<version>-<12 hex>`.
 pub(crate) fn old_install(qemu: &Path, name: &str) -> PathBuf {
     let root = qemu.join(name);
