@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::{WindowsHost, user, wide};
 use crate::host::names::windows_run_dir;
-use crate::host::{Entry, HoldOutcome, Host};
+use crate::host::{Entry, HoldOutcome, Host, MakePrivateError};
 use crate::test_support::file_security::{Security, set_protected_dacl};
 use crate::test_support::fixtures::unicode_home;
 
@@ -449,4 +449,22 @@ fn a_file_open_for_writing_cannot_be_held_and_the_error_says_why(#[fixture(unico
     let error = WindowsHost.open_held_read(&path).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ResourceBusy, "{error}");
     assert!(error.to_string().contains("open for writing"), "{error}");
+}
+
+/// An `OWNER RIGHTS` entry (here `DELETE` and `SYNCHRONIZE`, so the test can remove the file) replaces the owner's
+/// implicit `WRITE_DAC`, and `Everyone` can read: the DACL can be looked at but not changed.
+#[skuld::test]
+fn a_file_whose_dacl_cannot_be_changed_is_a_change_error_naming_the_refusal(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("key");
+    std::fs::write(&path, b"secret").unwrap();
+    set_protected_dacl(&path, "D:P(A;;0x110000;;;OW)(A;;FR;;;WD)");
+    let before = Security::of(&path).allowed_sids();
+
+    let error = WindowsHost.make_private(&path).unwrap_err();
+
+    let MakePrivateError::Change(source) = &error else {
+        panic!("the DACL was read, so only the change failed: {error:?}")
+    };
+    assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied, "{source}");
+    assert_eq!(Security::of(&path).allowed_sids(), before, "the DACL is left as it was");
 }

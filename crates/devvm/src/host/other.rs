@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use super::unsupported::{FileModes, claim_then_rename};
-use super::{Entry, FileId};
+use super::{Entry, FileId, MakePrivateError, MakePrivateOutcome, is_a_link};
 
 pub(crate) struct OtherHost;
 
@@ -19,6 +19,15 @@ pub(crate) fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()>
 impl FileModes for OtherHost {
     fn private_options(&self) -> OpenOptions {
         OpenOptions::new()
+    }
+
+    /// There are no mode bits here; the file only has to be there, and not be a link.
+    fn make_private(&self, path: &Path) -> Result<MakePrivateOutcome, MakePrivateError> {
+        let meta = std::fs::symlink_metadata(path).map_err(MakePrivateError::Check)?;
+        if meta.is_symlink() {
+            return Err(MakePrivateError::Check(is_a_link(path)));
+        }
+        Ok(MakePrivateOutcome::Unchanged)
     }
 
     /// No file system here lacks hard links.

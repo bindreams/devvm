@@ -22,7 +22,9 @@ use crate::{Arch, Error, ErrorKind, GuestKind, Network, Result};
 #[path = "record_tests.rs"]
 mod record_tests;
 
-/// The schema of `record.json`, `owner.json` and `holder.json` this devvm writes and reads.
+/// The schema of `record.json`, `owner.json` and `holder.json` this devvm writes and reads. Every change to what these
+/// files store bumps it. A record of any other schema is refused, and before 1.0 a record from another build is not
+/// migrated.
 pub(crate) const SCHEMA: u64 = 1;
 
 pub(crate) const RECORD_FILE: &str = "record.json";
@@ -223,7 +225,7 @@ fn from_wire(wire: Wire) -> std::result::Result<InstanceRecord, String> {
     })
 }
 
-/// Reads `file` in `dir`, parses it with `parse` and maps a newer schema to `Err(Store)`.
+/// Reads `file` in `dir`, parses it with `parse` and checks its schema ([`check_schema`]).
 fn read_file<T>(
     dir: &Path,
     file: &str,
@@ -242,19 +244,32 @@ fn read_file<T>(
         Ok(schema) => schema.schema,
         Err(e) => return Ok(Err(e.to_string())),
     };
-    if schema > SCHEMA {
+    if let Err(why) = check_schema(&path, schema, SCHEMA)? {
+        return Ok(Err(why));
+    }
+    Ok(parse(&text).map(Some))
+}
+
+/// Whether the file at `path`, of `schema`, is one a build of schema `build` reads. A newer schema is a [`Store`]
+/// error: the file is somebody else's live instance. An older one is not read, and the reason names it.
+///
+/// [`Store`]: ErrorKind::Store
+pub(crate) fn check_schema(path: &Path, schema: u64, build: u64) -> Result<std::result::Result<(), String>> {
+    if schema > build {
         return Err(Error::new(
             ErrorKind::Store,
             format!(
-                "{} has schema {schema}, written by a newer devvm than this one (schema {SCHEMA}); upgrade devvm",
+                "{} has schema {schema}, written by a newer devvm than this one (schema {build}); upgrade devvm",
                 path.display()
             ),
         ));
     }
-    if schema == 0 {
-        return Ok(Err("schema 0".to_owned()));
+    if schema < build {
+        return Ok(Err(format!(
+            "schema {schema}, older than the schema {build} this devvm reads"
+        )));
     }
-    Ok(parse(&text).map(Some))
+    Ok(Ok(()))
 }
 
 /// What [`write_file`] appends to a name for the file it writes first, followed by the hex of [`TEMP_BYTES`] bytes.

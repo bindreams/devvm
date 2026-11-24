@@ -10,7 +10,7 @@ use rustix::io::Errno;
 
 use super::entry;
 use super::unsupported::{FileModes, claim_then_rename};
-use super::{Entry, FileId};
+use super::{Entry, FileId, MakePrivateError, MakePrivateOutcome, refused_as_link};
 
 #[cfg(test)]
 #[path = "unix_tests.rs"]
@@ -23,6 +23,26 @@ impl FileModes for UnixHost {
         let mut options = OpenOptions::new();
         options.mode(0o600);
         options
+    }
+
+    /// Opens `path` once, without following a link and without waiting on a pipe ([`open_regular`]), and looks at and
+    /// changes that descriptor. A mode with no group or other permission bits is left as it is; any other is set to
+    /// `0600`. A name that is not a regular file is refused, and so is a file its owner cannot read.
+    fn make_private(&self, path: &Path) -> Result<MakePrivateOutcome, MakePrivateError> {
+        let file = open_regular(path).map_err(|e| MakePrivateError::Check(refused_as_link(path, e)))?;
+        let metadata = file.metadata().map_err(MakePrivateError::Check)?;
+        if !metadata.is_file() {
+            return Err(MakePrivateError::Check(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", path.display()),
+            )));
+        }
+        if metadata.permissions().mode() & 0o077 == 0 {
+            return Ok(MakePrivateOutcome::Unchanged);
+        }
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(MakePrivateError::Change)?;
+        Ok(MakePrivateOutcome::Changed)
     }
 
     fn hold_options(&self) -> OpenOptions {

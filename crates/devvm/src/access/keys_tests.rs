@@ -6,6 +6,7 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
 use crate::test_groups::{Group, symlinks};
+use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{DirectoryCall, RecordingHost, TestHost};
 use crate::test_support::symlink::symlink;
@@ -58,6 +59,115 @@ fn write_then_read_keys_under_a_space_and_non_ascii_directory(#[fixture(unicode_
         assert!(dir.join(name).is_file(), "{name}");
     }
     assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&keys));
+}
+
+#[skuld::test]
+fn read_private_takes_keys_written_before_they_were_private_to_the_users_alone(#[fixture(unicode_home)] home: &Path) {
+    let loose = home.join("loose");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    let me = crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let dir = loose.join("keys");
+    let keys = InstanceKeys::generate().unwrap();
+    keys.write(&TestHost, &dir).unwrap();
+    for name in ["client", "host"] {
+        file_mode::loosen(&dir.join(name));
+    }
+    #[cfg(windows)]
+    assert!(
+        crate::test_support::file_security::Security::of(&dir.join("client"))
+            .allowed_sids()
+            .len()
+            > 1,
+        "the client key must have the inherited entries"
+    );
+
+    let mut warnings = Vec::new();
+    let read = InstanceKeys::read_private(&TestHost, &dir, &mut |text| warnings.push(text)).unwrap();
+
+    assert_eq!(texts(&read), texts(&keys));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    for name in ["client", "host"] {
+        assert_eq!(file_mode::mode(&dir.join(name)), cfg!(unix).then_some(0o600), "{name}");
+        #[cfg(windows)]
+        crate::test_support::private_files::assert_is_the_users_alone(&dir.join(name), &me);
+    }
+}
+
+#[skuld::test]
+fn read_private_of_a_missing_set_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = InstanceKeys::read_private(&TestHost, &home.join("keys"), &mut |_| {}).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound);
+}
+
+#[skuld::test]
+fn read_private_reads_and_warns_when_a_key_cannot_be_made_private(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("keys");
+    let keys = InstanceKeys::generate().unwrap();
+    keys.write(&TestHost, &dir).unwrap();
+    let host = RecordingHost::new();
+    host.fail_make_private();
+
+    let mut warnings = Vec::new();
+    let read = InstanceKeys::read_private(&host, &dir, &mut |text| warnings.push(text)).unwrap();
+
+    assert_eq!(texts(&read), texts(&keys));
+    let [client, host_key] = warning_for_each_key(&dir, &warnings);
+    assert!(client.contains("the test made this make_private fail"), "{client}");
+    assert!(
+        client.contains("OpenSSH refuses a key others can read") && client.contains("`devvm ssh`"),
+        "{client}"
+    );
+    assert!(host_key.contains("the test made this make_private fail"), "{host_key}");
+    assert!(
+        host_key.contains("others may read it") && !host_key.contains("OpenSSH"),
+        "OpenSSH on the host never reads the host key: {host_key}"
+    );
+}
+
+/// The one warning that names each key of `dir`, the client key first.
+fn warning_for_each_key<'a>(dir: &Path, warnings: &'a [String]) -> [&'a String; 2] {
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    ["client", "host"].map(|name| {
+        let path = dir.join(name).display().to_string();
+        let named: Vec<_> = warnings.iter().filter(|w| w.contains(&path)).collect();
+        assert_eq!(named.len(), 1, "one warning names {path}: {warnings:?}");
+        named[0]
+    })
+}
+
+/// A link at the name of a private key is not looked through: what it leads to is not devvm's, and so the key's
+/// protection is not known, which the warning says instead of that the key is not private.
+#[skuld::test]
+fn read_private_warns_that_the_protection_of_a_key_that_is_a_link_cannot_be_checked(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let dir = home.join("keys");
+    let keys = InstanceKeys::generate().unwrap();
+    keys.write(&TestHost, &dir).unwrap();
+    for name in ["client", "host"] {
+        let target = home.join(format!("{name}-target"));
+        std::fs::rename(dir.join(name), &target).unwrap();
+        symlink(&target, &dir.join(name));
+    }
+
+    let mut warnings = Vec::new();
+    let read = InstanceKeys::read_private(&TestHost, &dir, &mut |text| warnings.push(text)).unwrap();
+
+    assert_eq!(texts(&read), texts(&keys));
+    let [client, host_key] = warning_for_each_key(&dir, &warnings);
+    for (name, warning) in [("client", client), ("host", host_key)] {
+        assert!(
+            warning.starts_with("cannot check the protection of the ") && warning.contains("is a link"),
+            "{warning}"
+        );
+        let path = dir.join(name).display().to_string();
+        assert_eq!(warning.matches(&path).count(), 1, "the path is named once: {warning}");
+        assert!(!warning.contains("not private"), "the state is not known: {warning}");
+    }
+    assert!(client.contains("if others can read it, OpenSSH refuses it"), "{client}");
+    assert!(!host_key.contains("OpenSSH"), "{host_key}");
 }
 
 #[skuld::test]

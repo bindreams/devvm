@@ -7,7 +7,8 @@ use cosca::identity::ProcessId;
 
 use super::FileModes;
 use crate::host::{
-    FileId, Hold, HoldOutcome, after_failed_write, is_a_link, is_absent, new_name, symlink_metadata_if_present,
+    FileId, Hold, HoldOutcome, after_failed_write, is_a_link, is_absent, new_name, refused_as_link,
+    symlink_metadata_if_present,
 };
 
 #[derive(Debug)]
@@ -92,13 +93,11 @@ pub(super) fn open_refusing_links(host: &dyn FileModes, path: &Path, create: boo
     if symlink_metadata_if_present(path)?.is_some_and(|meta| meta.is_symlink()) {
         return Err(is_a_link(path));
     }
-    host.hold_options().create(create).open(path).map_err(|e| {
-        // The options refuse a link that appeared since the look, with an error that differs by system.
-        if !is_absent(&e) && matches!(symlink_metadata_if_present(path), Ok(Some(meta)) if meta.is_symlink()) {
-            return is_a_link(path);
-        }
-        e
-    })
+    // The options refuse a link that appeared since the look.
+    host.hold_options()
+        .create(create)
+        .open(path)
+        .map_err(|e| refused_as_link(path, e))
 }
 
 /// Holds the file at `path` if nobody else does, through [`open_refusing_links`].

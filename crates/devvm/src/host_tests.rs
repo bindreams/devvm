@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::OtherHost;
-use super::{Comparison, FileId, HoldOutcome, Host, current, host_exit_width};
+use super::{Comparison, FileId, HoldOutcome, Host, MakePrivateError, MakePrivateOutcome, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
 use crate::test_groups::{Group, PINNED_CHILD, acp_1252, symlinks};
@@ -251,6 +251,85 @@ fn assert_private_file_is_the_users_alone(home: &Path) {
         owner == me || owner == "S-1-5-32-544",
         "the owner must be the user or Administrators, not {owner}"
     );
+}
+
+#[skuld::test]
+fn make_private_takes_an_existing_file_to_the_users_alone(#[fixture(unicode_home)] home: &Path) {
+    let loose = home.join("loose");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    let me = crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let path = loose.join("older key");
+    std::fs::write(&path, b"secret").unwrap();
+    file_mode::set_mode(&path, 0o644);
+
+    assert_eq!(current().make_private(&path).unwrap(), MakePrivateOutcome::Changed);
+
+    assert_eq!(file_mode::mode(&path), cfg!(unix).then_some(0o600));
+    #[cfg(windows)]
+    crate::test_support::private_files::assert_is_the_users_alone(&path, &me);
+    assert_eq!(std::fs::read(&path).unwrap(), b"secret", "the contents are left alone");
+    assert_eq!(
+        current().make_private(&path).unwrap(),
+        MakePrivateOutcome::Unchanged,
+        "a file that is private already is left as it is"
+    );
+}
+
+#[skuld::test]
+fn make_private_leaves_a_file_write_private_made(#[fixture(unicode_home)] home: &Path) {
+    let loose = home.join("loose");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let path = loose.join("key");
+    current().write_private(&path, b"secret").unwrap();
+
+    assert_eq!(current().make_private(&path).unwrap(), MakePrivateOutcome::Unchanged);
+}
+
+/// A link at a key's name is nothing devvm made: it is refused on every host, and what it leads to keeps its
+/// permissions.
+#[skuld::test]
+fn make_private_of_a_link_is_refused_and_leaves_what_it_leads_to(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let loose = home.join("loose");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let target = loose.join("target");
+    std::fs::write(&target, b"secret").unwrap();
+    file_mode::set_mode(&target, 0o644);
+    #[cfg(windows)]
+    let allowed_before = crate::test_support::file_security::Security::of(&target).allowed_sids();
+    let link = loose.join("client");
+    symlink(&target, &link);
+
+    let error = current().make_private(&link).unwrap_err();
+
+    let MakePrivateError::Check(source) = &error else {
+        panic!("a link is not looked through, so its protection is not known: {error:?}")
+    };
+    assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput, "{source}");
+    assert!(source.to_string().ends_with("is a link"), "{source}");
+    assert_eq!(file_mode::mode(&target), cfg!(unix).then_some(0o644));
+    #[cfg(windows)]
+    assert_eq!(
+        crate::test_support::file_security::Security::of(&target).allowed_sids(),
+        allowed_before,
+        "the file the link leads to is not restricted"
+    );
+}
+
+#[skuld::test]
+fn make_private_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = current().make_private(&home.join("absent")).unwrap_err();
+    let MakePrivateError::Check(source) = &error else {
+        panic!("a missing file has no protection to look at: {error:?}")
+    };
+    assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
 }
 
 #[skuld::test]

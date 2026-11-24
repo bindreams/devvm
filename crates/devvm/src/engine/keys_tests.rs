@@ -6,10 +6,14 @@ use secrecy::ExposeSecret;
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
 use crate::engine::engine_tests::{engine_fixture, instance_in, memory, record_machine, running_machine};
-use crate::engine::keys::{SSH_USER, ensure_keys, read_target};
+use crate::engine::keys::{SSH_USER, ensure_keys, keys_dir, read_target};
 use crate::host::symlink_metadata_if_present;
+use crate::instance::dir::InstanceDir;
+use crate::test_groups::{Group, symlinks};
+use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::host::TestHost;
+use crate::test_support::host::{RecordingHost, TestHost};
+use crate::test_support::symlink::symlink;
 
 const FILES: [&str; 4] = ["client", "client.pub", "host", "host.pub"];
 
@@ -87,6 +91,73 @@ fn an_empty_keys_directory_is_filled_not_refused(#[fixture(unicode_home)] home: 
     let keys = ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
 
     assert_eq!(InstanceKeys::read(&keys_dir).unwrap().host_public, keys.host_public);
+}
+
+/// The instance's keys with loose permissions. On Windows the instance directory hands `Authenticated Users` write
+/// down, so a new file there is readable by others.
+fn loose_keys(dir: &InstanceDir) {
+    #[cfg(windows)]
+    crate::test_support::private_files::let_other_accounts_write_below(dir.path());
+    let op = dir.op_exclusive().unwrap();
+    ensure_keys(dir, &op, &TestHost, &mut |_| {}).unwrap();
+    for name in ["client", "host"] {
+        file_mode::loosen(&keys_dir(dir).join(name));
+    }
+}
+
+fn assert_private_keys(dir: &InstanceDir) {
+    for name in ["client", "host"] {
+        let path = keys_dir(dir).join(name);
+        assert_eq!(file_mode::mode(&path), cfg!(unix).then_some(0o600), "{name}");
+        #[cfg(windows)]
+        crate::test_support::private_files::assert_is_the_users_alone(
+            &path,
+            &crate::host::windows::user::current_sid().unwrap(),
+        );
+    }
+}
+
+#[skuld::test]
+fn keys_written_before_they_were_private_are_made_private_at_the_next_start(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "foo", home);
+    loose_keys(&dir);
+
+    let op = dir.op_exclusive().unwrap();
+    ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
+
+    assert_private_keys(&dir);
+}
+
+#[skuld::test]
+fn keys_that_cannot_be_made_private_are_still_read_and_warned_about(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "foo", home);
+    let op = dir.op_exclusive().unwrap();
+    let written = ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
+    let host = RecordingHost::new();
+    host.fail_make_private();
+
+    let mut warnings = Vec::new();
+    let read = ensure_keys(&dir, &op, &host, &mut |text| warnings.push(text)).unwrap();
+
+    assert_eq!(read.host_public, written.host_public);
+    assert_eq!(warnings.len(), 2, "one warning per private key: {warnings:?}");
+}
+
+#[skuld::test]
+fn keys_written_before_they_were_private_are_made_private_when_the_target_is_read(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "foo", home);
+    loose_keys(&dir);
+    record_machine(&dir, &running_machine(home, "127.0.0.1:2222".parse().unwrap()));
+
+    let op = dir.op_shared().unwrap();
+    read_target(&fx.engine, &dir, &op).unwrap();
+
+    assert_private_keys(&dir);
 }
 
 #[skuld::test]
@@ -168,4 +239,37 @@ fn a_machine_with_no_normal_endpoint_is_an_internal_error_naming_the_instance(#[
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert!(error.message().contains("foo"), "{error}");
+}
+
+/// The target of a running instance is read with a warning per key that cannot be checked, not an error, and the
+/// warning reaches the progress channel naming the instance.
+#[skuld::test]
+fn keys_that_are_links_are_warned_about_when_the_target_is_read(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let progress = memory();
+    let fx = engine_fixture(home, progress.clone());
+    let dir = instance_in(&fx, "foo", home);
+    let op = dir.op_exclusive().unwrap();
+    ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
+    drop(op);
+    for name in ["client", "host"] {
+        let target = home.join(format!("{name}-target"));
+        std::fs::rename(keys_dir(&dir).join(name), &target).unwrap();
+        symlink(&target, &keys_dir(&dir).join(name));
+    }
+    record_machine(&dir, &running_machine(home, "127.0.0.1:2222".parse().unwrap()));
+
+    let op = dir.op_shared().unwrap();
+    read_target(&fx.engine, &dir, &op).unwrap();
+
+    let warnings = progress.warnings();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    for warning in &warnings {
+        assert!(
+            warning.starts_with("instance foo: cannot check the protection of the ") && warning.contains("is a link"),
+            "{warning}"
+        );
+    }
 }

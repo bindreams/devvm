@@ -11,6 +11,7 @@ use crate::instance::dir::{InstanceDir, OpExclusive, OpHeld};
 use crate::instance::expiry::warn_if_expired;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
+use crate::vm::warn_for;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -24,8 +25,9 @@ pub(crate) fn keys_dir(dir: &InstanceDir) -> PathBuf {
     dir.path().join("keys")
 }
 
-/// The keys of `dir`: generated at the first call and read at every later one, so a restarted instance keeps its host
-/// key and the seed it feeds stays the same. What the write could not clean up goes to `warn`.
+/// The keys of `dir`: generated at the first call and read at every later one ([`InstanceKeys::read_private`]), so a
+/// restarted instance keeps its host key and the seed it feeds stays the same. What the write could not clean up goes
+/// to `warn`.
 ///
 /// A set with a file missing is an error naming the directory, never a new set: `InstanceKeys::read` answers
 /// `NotFound` for it as for no keys at all, and the write that follows refuses a directory that is not empty.
@@ -36,7 +38,7 @@ pub(crate) fn ensure_keys(
     warn: &mut dyn FnMut(String),
 ) -> Result<InstanceKeys> {
     let path = keys_dir(dir);
-    match InstanceKeys::read(&path) {
+    match InstanceKeys::read_private(host, &path, warn) {
         Err(e) if e.kind() == ErrorKind::NotFound => {
             let keys = InstanceKeys::generate()?;
             for warning in keys.write(host, &path)? {
@@ -88,8 +90,9 @@ pub(crate) fn read_record(engine: &Engine, dir: &InstanceDir, _op: &impl OpHeld)
     Ok(record)
 }
 
-/// The machine `dir` has now, built from its record, the backend and the key files: the op lock keeps the starter from
-/// rewriting any of them. A recorded machine that the backend does not find is not running: the record is stale.
+/// The machine `dir` has now, built from its record, the backend and the key files, which are made private as they are
+/// read: the op lock keeps the starter from rewriting any of them. A recorded machine that the backend does not find is
+/// not running: the record is stale.
 pub(crate) fn read_target(engine: &Engine, dir: &InstanceDir, op: &impl OpHeld) -> Result<Running> {
     running_of(engine, dir, &read_record(engine, dir, op)?, op)
 }
@@ -108,7 +111,11 @@ pub(crate) fn running_of(
     let Some(found) = dir.find_machine(&**engine.backend()?, machine)? else {
         return Err(not_running(record));
     };
-    let target = target_for(&record.name, machine, &InstanceKeys::read(&keys_dir(dir))?)?;
+    let target = target_for(
+        &record.name,
+        machine,
+        &InstanceKeys::read_private(engine.host(), &keys_dir(dir), &mut warn_for(engine, dir))?,
+    )?;
     Ok(Running {
         machine: found,
         record: machine.clone(),

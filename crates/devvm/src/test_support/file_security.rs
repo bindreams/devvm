@@ -6,8 +6,8 @@ use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT, SetNamedSecurityInfoW};
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, GetAce,
-    GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
+    GetAclInformation, GetSecurityDescriptorControl, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    SE_DACL_PROTECTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
@@ -31,14 +31,7 @@ pub fn set_attributes(path: &Path, attributes: u32) -> std::io::Result<()> {
 pub fn set_protected_dacl(path: &Path, sddl: &str) {
     let wide_path = wide(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let descriptor = Descriptor::from_sddl(sddl).expect("the DACL does not parse");
-    let status = descriptor.with_attributes(|attributes| {
-        let (mut present, mut defaulted) = (0, 0);
-        let mut dacl: *mut ACL = std::ptr::null_mut();
-        // SAFETY: the descriptor is live and the out-pointers are valid.
-        let got = unsafe {
-            GetSecurityDescriptorDacl(attributes.lpSecurityDescriptor, &mut present, &mut dacl, &mut defaulted)
-        };
-        assert!(got != 0 && present != 0, "the descriptor has no DACL");
+    let status = descriptor.with_dacl(|dacl| {
         // SAFETY: `wide_path` is NUL-terminated and `dacl` points into the live descriptor; a null owner, group and
         // SACL are allowed because those parts are not set.
         unsafe {
@@ -53,7 +46,12 @@ pub fn set_protected_dacl(path: &Path, sddl: &str) {
             )
         }
     });
-    assert_eq!(status, 0, "SetNamedSecurityInfoW({})", path.display());
+    assert_eq!(
+        status.expect("the descriptor has a DACL"),
+        0,
+        "SetNamedSecurityInfoW({})",
+        path.display()
+    );
 }
 
 /// A plain allow entry of a DACL.
@@ -154,7 +152,8 @@ impl Security {
                 // SAFETY: a type-0 entry is an `ACCESS_ALLOWED_ACE`, whose SID starts at `SidStart`.
                 let sid = unsafe { (&raw mut (*ace).SidStart).cast::<std::ffi::c_void>() };
                 Allowed {
-                    sid: user::sid_string(sid).unwrap(),
+                    // SAFETY: `sid` points into the live DACL, which is not changed meanwhile.
+                    sid: unsafe { user::sid_string(sid) }.unwrap(),
                     // SAFETY: as above; the fields are read unaligned because the entry sits in a byte buffer.
                     mask: unsafe { std::ptr::read_unaligned(&raw const (*ace).Mask) },
                     flags: unsafe { std::ptr::read_unaligned(&raw const (*ace).Header.AceFlags) },
