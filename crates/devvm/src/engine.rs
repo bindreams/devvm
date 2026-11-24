@@ -346,6 +346,10 @@ impl Engine {
         self.boot_bound
     }
 
+    pub(crate) fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
     pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
         &self.clock
     }

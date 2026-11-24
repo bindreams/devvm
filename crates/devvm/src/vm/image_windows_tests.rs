@@ -4,8 +4,10 @@ use std::process::{Child, Stdio};
 use std::sync::Arc;
 
 use crate::backend::MachineRecord;
+use crate::backend::fake::{FakeBackend, GuestScript};
 use crate::contain::VmProcess;
-use crate::engine::engine_tests::{EngineFixture, engine_fixture, image_of, leaking_fixture};
+use crate::engine::NoHooks;
+use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_fixture_from, image_of, leaking_fixture};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::instance::registry::registry_tests::lock_files_in;
@@ -14,6 +16,7 @@ use crate::test_support::fake_vm::answer;
 use crate::test_support::fake_vm::{STARTED, connect_when_up, started_port};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::helper;
+use crate::test_support::host::TestHost;
 use crate::{Command, ErrorKind, Guest, Instance, InstanceState, ListFilter, StartOptions};
 
 fn memory_fixture(home: &Path) -> (EngineFixture, Arc<MemoryProgress>) {
@@ -386,4 +389,48 @@ fn a_vm_that_never_gets_ready_is_killed_and_its_instance_destroyed(#[fixture(uni
     }
     assert_eq!(fx.fake.launches(), 2);
     nothing_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_failed_start_of_a_transient_vm_names_a_serial_log_that_exists_after_the_instance_is_gone(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The guest writes its console, then its VM process dies before it is ready.
+    let script: GuestScript = Arc::new(|_, spec, power| {
+        std::fs::write(
+            &spec.serial_log,
+            "booting
+kernel panic
+",
+        )
+        .unwrap();
+        power.crash();
+    });
+    let fx = engine_fixture_from(
+        home,
+        Arc::new(MemoryProgress::default()),
+        Arc::new(NoHooks),
+        FakeBackend::new(&TestHost).with_guest(script),
+        |fake| fake,
+    );
+    fx.guests.ready_when("hold");
+
+    let error = image_of(&fx.engine).start(&StartOptions::default()).err().unwrap();
+
+    nothing_is_left(&fx);
+    let copy = error.serial_log().expect("the error names the serial log");
+    assert_eq!(copy.parent(), Some(fx.env.dirs.logs().as_path()), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(copy).unwrap(),
+        "booting
+kernel panic
+"
+    );
+    assert!(
+        error.message().ends_with(
+            "booting
+kernel panic"
+        ),
+        "{error}"
+    );
 }

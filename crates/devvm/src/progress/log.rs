@@ -166,7 +166,6 @@ impl FileLog {
 /// Copies `source` to a new `devvm-<UTC time>-<pid>-<4 hex>.serial.log` in `dir` (made if missing), pruning old logs
 /// first as [`FileLog::create`] does. Prune problems go to `warn`. The copy is the user's alone and streamed. An
 /// unreadable `source` makes no file; a copy that fails half way is removed. Returns the copy's path.
-#[allow(dead_code, reason = "no caller yet")]
 pub(crate) fn keep_copy(
     dir: &Path,
     clock: &dyn Clock,

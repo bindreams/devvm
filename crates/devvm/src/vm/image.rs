@@ -17,9 +17,10 @@ use crate::instance::dir::OpShared;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::instance::registry::{NewInstance, Owned};
+use crate::progress::keep_copy;
 use crate::recipe::{Flattened, Recipe};
 use crate::store::fetch::LazyHttp;
-use crate::store::layers::ChainLease;
+use crate::store::layers::{ChainLease, Clock};
 use crate::vm::{Guest, Handle, Instance, Started, ops, remove_leftovers, remove_ssh_entry, warn_for};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, GuestKind, Result, StartOptions};
 
@@ -38,6 +39,26 @@ mod image_other_tests;
 /// The CPUs and memory of a guest whose recipe sets none: an instance's, and a Windows base build's.
 pub(crate) const DEFAULT_CPUS: u32 = 2;
 pub(crate) const DEFAULT_MEMORY: u64 = 4 << 30;
+
+/// `error` whose serial log is `serial`: the log copied to `logs` ([`keep_copy`]), the error's path set to the copy and
+/// the last lines of the original added. A copy that fails is told in the error, which keeps its first failure. An
+/// error that names another file is returned as it is and no file is made.
+pub(crate) fn keep_serial_log(
+    logs: &Path,
+    clock: &dyn Clock,
+    serial: &Path,
+    warn: &mut dyn FnMut(&str),
+    error: Error,
+) -> Error {
+    if error.serial_log() != Some(serial) {
+        return error;
+    }
+    match keep_copy(logs, clock, serial, warn) {
+        Ok(copy) => error.with_serial_log(copy),
+        Err(e) => error.with_step(format_args!("the serial log was not kept: {e}")),
+    }
+    .with_log_tail("the serial log", serial)
+}
 
 /// A built image: the layers a VM starts from. While the handle lives, garbage collection keeps those layers.
 pub struct Image {
@@ -98,7 +119,8 @@ impl Image {
             machine: Mutex::new(None),
             session: Mutex::new(None),
         };
-        let Started { machine, session } = vm.instance().start_with(lifetime)?.ok_or_else(|| {
+        // While `vm` lives: its drop destroys the instance, and the serial log with it.
+        let Started { machine, session } = vm.kept(vm.instance().start_with(lifetime))?.ok_or_else(|| {
             Error::new(
                 ErrorKind::Internal,
                 format!("the new instance {} is already running", vm.name()),
@@ -309,8 +331,10 @@ impl Vm {
     /// Runs `f` with an SFTP session to the guest, over the connection that found it ready, under the shared op lock
     /// that keeps `stop`, `remove` and `reboot` from ending the machine while `f` uses it.
     pub(crate) fn with_sftp<T>(&self, f: impl FnOnce(&Sftp) -> Result<T>) -> Result<T> {
-        let (_, session, op) = self.reached()?;
-        f(&self.on_session(&op, &session, SshSession::sftp)?)
+        self.kept(
+            self.reached()
+                .and_then(|(_, session, op)| f(&self.on_session(&op, &session, SshSession::sftp)?)),
+        )
     }
 
     /// Shuts the guest down and returns once its process has exited, under the exclusive op lock. The VM is not
@@ -318,6 +342,10 @@ impl Vm {
     /// the drop to kill: it is never forced here. A guest that acknowledges the request and never powers off is waited
     /// for without end.
     pub(crate) fn shutdown(&self) -> Result<()> {
+        self.kept(self.shut_down())
+    }
+
+    fn shut_down(&self) -> Result<()> {
         let instance = self.instance();
         let dir = instance.dir();
         let op = dir.op_exclusive()?;
@@ -330,6 +358,32 @@ impl Vm {
         machine.shutdown()?;
         let dead = slot.take().expect("the machine was just shut down").record();
         dir.retire_machine(&op, &dead, instance.engine.host(), &mut warn_for(&instance.engine, dir))
+    }
+
+    fn rebooted(&self) -> Result<()> {
+        let instance = self.instance();
+        let dir = instance.dir();
+        let op = dir.op_exclusive()?;
+        let session = ops::reboot(&instance.engine, dir, &op);
+        // After a failed reboot the old session can still look alive while it points at the old boot: drop it.
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = session.as_ref().ok().cloned();
+        session.map(drop)
+    }
+
+    /// `result`, with the serial log an error names copied beside the run's log ([`keep_serial_log`]): the log goes
+    /// with the instance, and the error is read after it.
+    fn kept<T>(&self, result: Result<T>) -> Result<T> {
+        result.map_err(|error| {
+            let instance = self.instance();
+            let engine = &instance.engine;
+            keep_serial_log(
+                &engine.dirs().logs(),
+                &**engine.clock(),
+                &instance.dir().serial_log(),
+                &mut |warning| engine.progress().warn(warning),
+                error,
+            )
+        })
     }
 
     /// The guest, the session and the shared op lock for one operation.
@@ -395,43 +449,43 @@ impl Vm {
 
     /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives. As [`Instance::run_to`].
     pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
-        let (guest, session, op) = self.reached()?;
-        let engine = &self.instance().engine;
-        self.on_session(&op, &session, |session| {
-            ops::run_to(engine, &*guest, session, cmd, &mut *out, &mut *err)
-        })
+        self.kept(self.reached().and_then(|(guest, session, op)| {
+            let engine = &self.instance().engine;
+            self.on_session(&op, &session, |session| {
+                ops::run_to(engine, &*guest, session, cmd, &mut *out, &mut *err)
+            })
+        }))
     }
 }
 
 impl Guest for Vm {
     fn run(&self, cmd: &Command) -> Result<Output> {
-        let (guest, session, op) = self.reached()?;
-        self.on_session(&op, &session, |session| ops::run(&*guest, session, cmd))
+        self.kept(
+            self.reached().and_then(|(guest, session, op)| {
+                self.on_session(&op, &session, |session| ops::run(&*guest, session, cmd))
+            }),
+        )
     }
 
     fn reboot(&self) -> Result<()> {
-        let instance = self.instance();
-        let dir = instance.dir();
-        let op = dir.op_exclusive()?;
-        let session = ops::reboot(&instance.engine, dir, &op);
-        // After a failed reboot the old session can still look alive while it points at the old boot: drop it.
-        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = session.as_ref().ok().cloned();
-        session.map(drop)
+        self.kept(self.rebooted())
     }
 
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()> {
-        let (guest, session, op) = self.reached()?;
-        let engine = &self.instance().engine;
-        self.on_session(&op, &session, |session| {
-            ops::copy_in(engine, &guest, session, src, dest)
-        })
+        self.kept(self.reached().and_then(|(guest, session, op)| {
+            let engine = &self.instance().engine;
+            self.on_session(&op, &session, |session| {
+                ops::copy_in(engine, &guest, session, src, dest)
+            })
+        }))
     }
 
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()> {
-        let (guest, session, op) = self.reached()?;
-        let engine = &self.instance().engine;
-        self.on_session(&op, &session, |session| {
-            ops::copy_out(engine, &guest, session, src, dest)
-        })
+        self.kept(self.reached().and_then(|(guest, session, op)| {
+            let engine = &self.instance().engine;
+            self.on_session(&op, &session, |session| {
+                ops::copy_out(engine, &guest, session, src, dest)
+            })
+        }))
     }
 }

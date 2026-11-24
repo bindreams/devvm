@@ -6,10 +6,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use super::build_tests::{
-    Fixture, assert_a_failed_phase_commits_nothing, chained_recipe, fixture, keys_of, no_instance_or_build_is_left,
-    ran, recipe, recipe_in,
+    Fixture, assert_a_failed_phase_commits_nothing, chained_recipe, fixture, fixture_over, keys_of,
+    no_instance_or_build_is_left, ran, recipe, recipe_in,
 };
-use crate::backend::fake::FakeBackend;
+use crate::backend::fake::{FakeBackend, GuestScript};
 use crate::copy::copy_tests::{add_all, new_repo, put};
 use crate::engine::ListFilter;
 use crate::guest::Guests;
@@ -352,6 +352,40 @@ fn a_run_step_whose_session_is_lost_names_the_step_and_its_command(#[fixture(uni
     assert!(message.contains("step 2 of 2"), "{message}");
     assert!(message.contains("`close-no-status`"), "{message}");
     no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_failed_build_step_names_a_serial_log_that_exists_after_the_build_returns(#[fixture(unicode_home)] home: &Path) {
+    let script: GuestScript = Arc::new(|_, spec, _| {
+        std::fs::write(
+            &spec.serial_log,
+            "booting
+step guest console
+",
+        )
+        .unwrap();
+    });
+    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_guest(script));
+    let recipe = recipe(home, &["run: close-no-status"]);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    no_instance_or_build_is_left(&fx);
+    let copy = error.serial_log().expect("the error names the serial log");
+    assert_eq!(copy.parent(), Some(fx.dirs.logs().as_path()), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(copy).unwrap(),
+        "booting
+step guest console
+"
+    );
+    assert!(
+        error.message().ends_with(
+            "booting
+step guest console"
+        ),
+        "{error}"
+    );
 }
 
 #[skuld::test]

@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 
+use super::keep_serial_log;
 use crate::access::keys::InstanceKeys;
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::backend::{Backend, Machine};
@@ -11,13 +12,16 @@ use crate::engine::keys::{ensure_keys, read_target};
 use crate::instance::expiry::expiry_tests::running_expiring;
 use crate::instance::record::{MarkerRead, Owner, RECORD_FILE, read_marker};
 use crate::recipe::Resources;
+use crate::store::layers::SystemClock;
 use crate::store::layers::layers_tests::{days, names, t0};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::ops::ops_tests::{running_instance, short_bound_instance};
 use crate::vm::{Guest, Handle, ops};
-use crate::{Command, Dirs, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use crate::{
+    Command, Dirs, Error, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability,
+};
 use secrecy::ExposeSecret;
 use skuld::env;
 
@@ -644,4 +648,168 @@ fn an_instance_warns_once_per_operation_that_reaches_the_guest(#[fixture(unicode
     assert_eq!(progress.warnings().len(), 3, "ssh_config: {:?}", progress.warnings());
     instance.reboot().unwrap();
     assert_eq!(progress.warnings().len(), 4, "reboot: {:?}", progress.warnings());
+}
+
+// A failed VM keeps its serial log ====================================================================================
+
+/// `error` through `keep_serial_log` for the log `serial`, kept in `logs`; the warnings it told are in `warned`.
+fn kept(logs: &Path, serial: &Path, error: Error, warned: &mut Vec<String>) -> Error {
+    keep_serial_log(
+        logs,
+        &SystemClock,
+        serial,
+        &mut |warning| warned.push(warning.to_owned()),
+        error,
+    )
+}
+
+fn serial_in(home: &Path, text: &str) -> std::path::PathBuf {
+    let serial = home.join("instance").join("serial.log");
+    std::fs::create_dir_all(serial.parent().unwrap()).unwrap();
+    std::fs::write(&serial, text).unwrap();
+    serial
+}
+
+fn files_in(dir: &Path) -> Vec<std::path::PathBuf> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
+        Err(e) => {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+            Vec::new()
+        }
+    }
+}
+
+#[skuld::test]
+fn an_error_about_the_serial_log_names_a_kept_copy_that_survives_the_instance(#[fixture(unicode_home)] home: &Path) {
+    let serial = serial_in(
+        home,
+        "boot
+login:
+",
+    );
+    let logs = home.join("logs");
+    let error = Error::new(ErrorKind::ConnectionLost, "the VM process exited")
+        .with_source(std::io::Error::other("cause"))
+        .with_serial_log(&serial);
+
+    let error = kept(&logs, &serial, error, &mut Vec::new());
+    std::fs::remove_dir_all(serial.parent().unwrap()).unwrap();
+
+    let copy = error.serial_log().expect("the error names the copy").to_owned();
+    assert_ne!(copy, serial);
+    assert_eq!(copy.parent(), Some(logs.as_path()));
+    assert!(copy.to_str().unwrap().ends_with(".serial.log"), "{}", copy.display());
+    assert_eq!(
+        std::fs::read_to_string(&copy).unwrap(),
+        "boot
+login:
+"
+    );
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert!(std::error::Error::source(&error).is_some(), "the source stays");
+}
+
+#[skuld::test]
+fn the_error_ends_with_the_end_of_the_serial_log_and_names_the_kept_copy(#[fixture(unicode_home)] home: &Path) {
+    let lines: Vec<String> = (1..=45).map(|n| format!("line {n}")).collect();
+    let serial = serial_in(
+        home,
+        &lines.join(
+            "
+",
+        ),
+    );
+    let error = Error::new(ErrorKind::ConnectionLost, "the VM process exited").with_serial_log(&serial);
+
+    let error = kept(&home.join("logs"), &serial, error, &mut Vec::new());
+
+    let tail: Vec<String> = (26..=45).map(|n| format!("line {n}")).collect();
+    assert!(error.message().starts_with("the VM process exited"), "{error}");
+    assert!(
+        error.message().contains(&tail.join(
+            "
+"
+        )),
+        "{error}"
+    );
+    assert!(
+        !error.message().contains(
+            "line 25
+"
+        ),
+        "{error}"
+    );
+    assert!(error.message().ends_with("line 45"), "{error}");
+    assert_ne!(error.serial_log(), Some(serial.as_path()), "the error names the copy");
+    assert!(error.serial_log().unwrap().exists());
+}
+
+#[skuld::test]
+fn an_error_about_another_file_is_untouched_and_makes_no_file(#[fixture(unicode_home)] home: &Path) {
+    let serial = serial_in(
+        home, "boot
+",
+    );
+    let logs = home.join("logs");
+    let other = home.join("other.log");
+    let about_another = Error::new(ErrorKind::ConnectionLost, "lost").with_serial_log(&other);
+    let before = about_another.clone();
+    let about_none = Error::new(ErrorKind::Io, "no log");
+
+    let about_another = kept(&logs, &serial, about_another, &mut Vec::new());
+    let about_none = kept(&logs, &serial, about_none, &mut Vec::new());
+
+    assert_eq!(about_another.serial_log(), Some(other.as_path()));
+    assert_eq!(about_another.message(), before.message());
+    assert_eq!(about_none.message(), "no log");
+    assert!(files_in(&logs).is_empty(), "{:?}", files_in(&logs));
+
+    // An error that already names a kept copy is another file's: a second pass keeps nothing more.
+    let first = kept(
+        &logs,
+        &serial,
+        Error::new(ErrorKind::Io, "lost").with_serial_log(&serial),
+        &mut Vec::new(),
+    );
+    let again = kept(&logs, &serial, first.clone(), &mut Vec::new());
+    assert_eq!(again.message(), first.message());
+    assert_eq!(files_in(&logs).len(), 1, "{:?}", files_in(&logs));
+}
+
+#[skuld::test]
+fn a_copy_that_fails_is_named_and_the_first_error_stays(#[fixture(unicode_home)] home: &Path) {
+    let serial = serial_in(
+        home,
+        "boot
+login:
+",
+    );
+    // The logs directory is a file: nothing can be made in it.
+    let logs = home.join("logs");
+    std::fs::write(&logs, "not a directory").unwrap();
+    let error = Error::new(ErrorKind::ConnectionLost, "the VM process exited")
+        .with_source(std::io::Error::other("cause"))
+        .with_serial_log(&serial);
+
+    let error = kept(&logs, &serial, error, &mut Vec::new());
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert!(error.message().starts_with("the VM process exited; "), "{error}");
+    assert!(error.message().contains("the serial log was not kept: "), "{error}");
+    assert!(error.message().contains(&logs.display().to_string()), "{error}");
+    assert!(
+        error.message().ends_with(
+            "boot
+login:"
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        error.serial_log(),
+        Some(serial.as_path()),
+        "the log it could not keep is still named"
+    );
+    assert!(std::error::Error::source(&error).is_some(), "the source stays");
+    assert_eq!(std::fs::read_to_string(&logs).unwrap(), "not a directory");
 }
