@@ -176,6 +176,8 @@ pub(crate) struct State {
     /// Every `open` request: the path and the flags it came with.
     pub(crate) opened: Mutex<Vec<(String, russh_sftp::protocol::OpenFlags)>>,
     pub(crate) kill: Notify,
+    /// How many more channel opens the server refuses.
+    refuse_channels: AtomicUsize,
     /// Fired to end every connection with a reset (`RST`) instead of an orderly close.
     reset: Notify,
     /// How many requests are held (see [`SshdOptions::hold_realpath`] and the `stall-on-data` script).
@@ -249,6 +251,7 @@ impl TestSshd {
             transferred: AtomicU64::new(0),
             opened: Mutex::default(),
             kill: Notify::new(),
+            refuse_channels: AtomicUsize::new(0),
             reset: Notify::new(),
             held: AtomicUsize::new(0),
             held_notify: Notify::new(),
@@ -371,6 +374,11 @@ impl TestSshd {
     /// (the `stall-on-data` script).
     pub fn wait_for_held_request(&self) {
         wait_until(&self.state.held_notify, || self.state.held.load(Ordering::SeqCst) > 0);
+    }
+
+    /// Refuses the next `count` channel opens, on any connection; the connections stay up.
+    pub fn refuse_channel_opens(&self, count: usize) {
+        self.state.refuse_channels.store(count, Ordering::SeqCst);
     }
 
     /// Drops every open connection without a word.
@@ -580,6 +588,21 @@ impl Handler for Connection {
         reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        let refuse = &self.state.refuse_channels;
+        let mut left = refuse.load(Ordering::SeqCst);
+        let refused = loop {
+            if left == 0 {
+                break false;
+            }
+            match refuse.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break true,
+                Err(now) => left = now,
+            }
+        };
+        if refused {
+            // A reply dropped unanswered sends `AdministrativelyProhibited`.
+            return Ok(());
+        }
         self.channels.insert(channel.id(), channel);
         reply.accept().await;
         Ok(())

@@ -4,8 +4,8 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::access::SshSession;
 use crate::access::sftp::Sftp;
+use crate::access::{SshSession, is_not_started};
 use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
@@ -15,6 +15,7 @@ use crate::guest::GuestOs;
 use crate::host::Unavailable;
 use crate::instance::dir::OpShared;
 use crate::instance::name::InstanceName;
+use crate::instance::record::InstanceRecord;
 use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
 use crate::store::fetch::LazyHttp;
@@ -170,7 +171,7 @@ pub struct Vm {
     /// The connection that found the guest ready, which every operation uses; `None` until the start has finished. A
     /// reboot replaces it with the one that found the new boot ready. A reboot that failed leaves `None`: the old
     /// connection may still look alive while it is to the old boot. An operation connects again for a session that is
-    /// `None` or no longer alive.
+    /// `None` or no longer alive, and once more when the session it found cannot open a channel (`on_session`).
     session: Mutex<Option<SshSession>>,
 }
 
@@ -189,14 +190,36 @@ impl Vm {
     pub(crate) fn hand_over(mut self, after_disarm: &mut dyn FnMut()) -> Result<Instance> {
         let instance = self.instance.take();
         let machine = self.machine.get_mut().unwrap_or_else(PoisonError::into_inner).take();
-        let (Some(Instance { engine, handle }), Some(mut machine)) = (instance, machine) else {
-            return Err(Error::new(ErrorKind::Internal, "this VM was already handed over"));
-        };
-        let Handle::Owned(owned) = handle else {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "this VM's instance is not owned by this process",
-            ));
+        let (engine, owned, mut machine) = match (instance, machine) {
+            (
+                Some(Instance {
+                    engine,
+                    handle: Handle::Owned(owned),
+                }),
+                Some(machine),
+            ) => (engine, owned, machine),
+            (
+                Some(
+                    instance @ Instance {
+                        handle: Handle::Owned(_),
+                        ..
+                    },
+                ),
+                machine,
+            ) => {
+                // Nothing was handed over: the drop of `self` still cleans up what this process owns.
+                self.instance = Some(instance);
+                *self.machine.get_mut().unwrap_or_else(PoisonError::into_inner) = machine;
+                return Err(Error::new(ErrorKind::Internal, "this VM has no machine running"));
+            }
+            // An instance this process does not own is not this handle's to destroy.
+            (Some(_), _) => {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "this VM's instance is not owned by this process",
+                ));
+            }
+            (None, _) => return Err(Error::new(ErrorKind::Internal, "this VM was already handed over")),
         };
         let dir = owned.make_ownerless(&mut || {
             machine.release()?;
@@ -286,8 +309,8 @@ impl Vm {
     /// Runs `f` with an SFTP session to the guest, over the connection that found it ready, under the shared op lock
     /// that keeps `stop`, `remove` and `reboot` from ending the machine while `f` uses it.
     pub(crate) fn with_sftp<T>(&self, f: impl FnOnce(&Sftp) -> Result<T>) -> Result<T> {
-        let (_, session, _op) = self.reached()?;
-        f(&session.sftp()?)
+        let (_, session, op) = self.reached()?;
+        f(&self.on_session(&op, &session, SshSession::sftp)?)
     }
 
     /// Shuts the guest down and returns once its process has exited, under the exclusive op lock. The VM is not
@@ -316,25 +339,72 @@ impl Vm {
         let op = dir.op_shared()?;
         let record = read_record(&instance.engine, dir, &op)?;
         let guest = instance.engine.guests().os(record.guest)?;
-        let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        let session = match slot.as_ref().filter(|session| session.is_alive()) {
-            Some(session) => session.clone(),
-            None => slot.insert(ops::reach(&instance.engine, dir, &record, &op)?.1).clone(),
+        let cached = self
+            .session
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|session| session.is_alive())
+            .cloned();
+        let session = match cached {
+            Some(session) => session,
+            None => self.connect_and_cache(&record, &op)?,
         };
         Ok((guest, session, op))
     }
 
+    /// A new connection to the guest `record` names, which becomes the cached session: the one stored last stays.
+    fn connect_and_cache(&self, record: &InstanceRecord, op: &OpShared) -> Result<SshSession> {
+        let instance = self.instance();
+        let fresh = ops::reach(&instance.engine, instance.dir(), record, op)?.1;
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = Some(fresh.clone());
+        Ok(fresh)
+    }
+
+    /// Runs `attempt` on `session`. A cached session may have ended unseen, so an `attempt` that fails before anything
+    /// of it reached the guest ([`is_not_started`]) is run once more on a new connection, which replaces the cached
+    /// one. Any other failure is the result: a command that was sent is never run again. When the new connection cannot
+    /// be made, the result is that failure, kind kept, with the first one named after it. `op` is the lock `reached`
+    /// returned.
+    fn on_session<T>(
+        &self,
+        op: &OpShared,
+        session: &SshSession,
+        mut attempt: impl FnMut(&SshSession) -> Result<T>,
+    ) -> Result<T> {
+        match attempt(session) {
+            Err(first) if is_not_started(&first) => match self.reconnect(op) {
+                Ok(fresh) => attempt(&fresh),
+                Err(failed) => Err(failed.with_step(format_args!("the first attempt failed: {}", first.message()))),
+            },
+            result => result,
+        }
+    }
+
+    /// A new connection to the guest, which becomes the cached session. A failure leaves no cached session. Each
+    /// operation that failed makes its own, as a server may limit the sessions of one connection.
+    fn reconnect(&self, op: &OpShared) -> Result<SshSession> {
+        // Cleared before anything can fail, so a stale session is not left cached.
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let instance = self.instance();
+        let record = read_record(&instance.engine, instance.dir(), op)?;
+        self.connect_and_cache(&record, op)
+    }
+
     /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives. As [`Instance::run_to`].
     pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
-        let (guest, session, _op) = self.reached()?;
-        ops::run_to(&self.instance().engine, &*guest, &session, cmd, out, err)
+        let (guest, session, op) = self.reached()?;
+        let engine = &self.instance().engine;
+        self.on_session(&op, &session, |session| {
+            ops::run_to(engine, &*guest, session, cmd, &mut *out, &mut *err)
+        })
     }
 }
 
 impl Guest for Vm {
     fn run(&self, cmd: &Command) -> Result<Output> {
-        let (guest, session, _op) = self.reached()?;
-        ops::run(&*guest, &session, cmd)
+        let (guest, session, op) = self.reached()?;
+        self.on_session(&op, &session, |session| ops::run(&*guest, session, cmd))
     }
 
     fn reboot(&self) -> Result<()> {
@@ -348,12 +418,18 @@ impl Guest for Vm {
     }
 
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()> {
-        let (guest, session, _op) = self.reached()?;
-        ops::copy_in(&self.instance().engine, &guest, &session, src, dest)
+        let (guest, session, op) = self.reached()?;
+        let engine = &self.instance().engine;
+        self.on_session(&op, &session, |session| {
+            ops::copy_in(engine, &guest, session, src, dest)
+        })
     }
 
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()> {
-        let (guest, session, _op) = self.reached()?;
-        ops::copy_out(&self.instance().engine, &guest, &session, src, dest)
+        let (guest, session, op) = self.reached()?;
+        let engine = &self.instance().engine;
+        self.on_session(&op, &session, |session| {
+            ops::copy_out(engine, &guest, session, src, dest)
+        })
     }
 }

@@ -7,10 +7,12 @@ use std::time::Duration;
 use russh::keys::{HashAlg, PrivateKey, PublicKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
-use crate::access::session::{BootGate, ClientHandler, Connect, Context, Failure, Transport, connect_tcp, humanly};
-use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit};
+use crate::access::session::{
+    BootGate, ClientHandler, Connect, Context, Failure, Transport, Watch, connect_tcp, humanly, is_not_started,
+    not_started,
+};
+use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit, runtime};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::exit::{ExitStatus, ExitWidth};
@@ -18,6 +20,7 @@ use crate::progress::NullProgress;
 use crate::test_support::callers::in_every_caller_context;
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::sshd::{FAST_KEEPALIVE as FAST, Rig, TestSshd};
+use crate::{Error, ErrorKind, Result};
 
 fn finished(session: &SshSession, command: &str) -> (ExitStatus, Vec<u8>, Vec<u8>) {
     let output = session.exec_collect(command).unwrap();
@@ -749,6 +752,145 @@ fn the_boot_gate_follows_changes_while_a_wait_is_in_flight() {
     });
 }
 
+#[skuld::test]
+fn only_an_error_marked_as_not_started_is_not_started() {
+    let lost = Error::new(ErrorKind::ConnectionLost, "the connection ended");
+
+    assert!(!is_not_started(&lost));
+    let marked = not_started(lost);
+    assert!(is_not_started(&marked));
+    assert_eq!(marked.kind(), ErrorKind::ConnectionLost, "the error keeps its kind");
+}
+
+#[skuld::test]
+fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    rig.sshd.refuse_channel_opens(1);
+
+    let error = session.exec_collect("echo refused").unwrap_err();
+
+    assert!(is_not_started(&error), "{error}");
+    assert_eq!(error.kind(), ErrorKind::Io, "the connection lives: {error}");
+    assert!(error.message().contains("channel could not be opened"), "{error}");
+    assert!(!error.message().contains("the connection ended"), "{error}");
+    assert_eq!(
+        finished(&session, "exit 0").0,
+        ExitStatus::Code(0),
+        "the connection lives"
+    );
+}
+
+#[skuld::test]
+fn a_channel_that_cannot_open_on_an_ended_connection_is_a_lost_connection_and_not_started(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    rig.sshd.drop_connections();
+    while session.is_alive() {
+        std::thread::yield_now();
+    }
+
+    let error = session.exec_collect("echo never").unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(is_not_started(&error), "{error}");
+}
+
+#[skuld::test]
+fn a_channel_open_that_fails_by_the_session_task_ending_is_a_lost_connection_before_the_end_is_recorded(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The task closes the handle's receiver before the handler records the end: a send error or a dropped reply is
+    // read while the connection still looks up.
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    assert!(session.is_alive(), "no end is recorded yet");
+
+    for cause in [russh::Error::SendError, russh::Error::Disconnect] {
+        let error = session.inner.channel_not_opened("opening a channel", &cause);
+
+        assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{cause}: {error}");
+        assert!(is_not_started(&error), "{cause}: {error}");
+        assert!(
+            !error.message().contains("while the connection is up"),
+            "{cause}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_vm_exit_while_the_sftp_subsystem_opens_is_not_marked_as_not_started(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let (fire, wait) = mpsc::channel::<()>();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let session = rig.connect_with(vm, None).unwrap();
+    std::thread::scope(|scope| {
+        // The server stops answering once it runs `freeze`, so the open cannot finish before the exit ends it.
+        let frozen = scope.spawn(|| session.exec_collect("freeze"));
+        rig.sshd.wait_for_commands(1);
+        fire.send(()).unwrap();
+        let error = session.sftp().err().expect("the VM exited");
+        assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+        assert!(error.message().contains("VM process exited"), "{error}");
+        assert!(
+            !is_not_started(&error),
+            "a new connection does not help a VM that exited: {error}"
+        );
+        frozen.join().unwrap().unwrap_err();
+    });
+}
+
+/// The error of a guarded operation that never finishes, so only the guard's own arms end it.
+fn guard_ended(session: &SshSession, watch: Watch) -> Error {
+    let inner = session.inner.clone();
+    runtime::run("the guard", async move {
+        inner
+            .guarded(
+                "opening the SFTP subsystem",
+                watch,
+                std::future::pending::<Result<()>>(),
+            )
+            .await
+    })
+    .unwrap()
+    .unwrap_err()
+}
+
+#[skuld::test]
+fn a_connection_that_ended_marks_the_guards_error_only_before_the_start(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    // Recorded directly, so the connection stays up and only the guard's transport arm is ready.
+    session.inner.transport.end("the connection was reset".to_owned());
+
+    let before = guard_ended(&session, Watch::TransportBeforeStart);
+    let during = guard_ended(&session, Watch::Transport);
+
+    assert_eq!(before.kind(), ErrorKind::ConnectionLost, "{before}");
+    assert!(is_not_started(&before), "{before}");
+    assert_eq!(during.kind(), ErrorKind::ConnectionLost, "{during}");
+    assert!(!is_not_started(&during), "{during}");
+}
+
+#[skuld::test]
+fn a_vm_exit_is_not_marked_as_not_started_though_the_connection_ended_too(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let (fire, wait) = mpsc::channel::<()>();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let session = rig.connect_with(vm.clone(), None).unwrap();
+    session.inner.transport.end("the connection was reset".to_owned());
+    fire.send(()).unwrap();
+    // Both ends are known when the guard starts; the VM's is the cause.
+    runtime::wait(vm.gone());
+
+    let error = guard_ended(&session, Watch::TransportBeforeStart);
+
+    assert!(error.message().contains("VM process exited"), "{error}");
+    assert!(!is_not_started(&error), "{error}");
+}
+
 // Host output =========================================================================================================
 
 struct RefusesWrites;
@@ -795,6 +937,24 @@ fn a_closed_host_output_closes_the_channel_of_a_command_that_went_quiet(#[fixtur
         .unwrap();
     assert!(matches!(end, ExecEnd::HostOutputClosed { status: None, .. }), "{end:?}");
     rig.sshd.wait_for_close_of("write-once-and-hold");
+}
+
+#[skuld::test]
+fn a_write_that_fails_after_the_exit_status_arrived_keeps_the_status(#[fixture(unicode_home)] home: &Path) {
+    // The marker follows the status on the wire, so the status has been read when the sink refuses the marker.
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let mut stderr = Vec::new();
+    let end = session
+        .exec("status-then-marker", &mut RefusesWrites, &mut stderr)
+        .unwrap();
+    match end {
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(status, Some(ExitStatus::Code(7)), "the command's result is not lost");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A sink that drops every connection of `sshd` when it receives output.
