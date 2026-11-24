@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use crate::error::{Error, ErrorKind};
 use crate::exit::format_error_line;
 use crate::host::Host;
-use crate::progress::log::{FileLog, owner_of};
+use crate::progress::log::{FileLog, keep_copy, keep_copy_with, owner_of, prune_one};
 use crate::progress::{Event, Progress, Task, Total};
 use crate::store::layers::Clock;
 use crate::test_support::file_mode;
@@ -343,4 +343,193 @@ fn the_owner_is_the_pid_before_the_last_dash() {
     assert_eq!(owner_of("devvm-20260101T000000Z-7-aaaa.log"), Some(7));
     assert_eq!(owner_of("devvm-2026-01-01-7-aaaa.log"), Some(7));
     assert_eq!(owner_of("devvm-old.log"), None);
+}
+
+// Kept copies ---------------------------------------------------------------------------------------------------------
+
+fn source_of(home: &Path, bytes: &[u8]) -> PathBuf {
+    let path = home.join("serial.log");
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+pub(super) fn copy_of(dir: &Path, source: &Path, warnings: &mut Vec<String>) -> std::io::Result<PathBuf> {
+    keep_copy(dir, &FixedClock(noon()), source, &mut |warning| {
+        warnings.push(warning.to_owned())
+    })
+}
+
+#[skuld::test]
+fn a_kept_copy_has_the_content_and_a_serial_log_name(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("logs");
+    let content: &[u8] = b"boot\r\nlogin:\n";
+    let source = source_of(home, content);
+    let mut warnings = Vec::new();
+    let copy = copy_of(&dir, &source, &mut warnings).unwrap();
+    assert_eq!(std::fs::read(&copy).unwrap(), content);
+    assert_eq!(copy.parent(), Some(dir.as_path()), "the directory is made");
+    let name = copy.file_name().unwrap().to_str().unwrap();
+    let rest = name
+        .strip_prefix("devvm-20261118T120000Z-")
+        .and_then(|rest| rest.strip_suffix(".serial.log"))
+        .unwrap_or_else(|| panic!("{name}"));
+    let (pid, random) = rest.split_once('-').unwrap();
+    assert_eq!(pid, std::process::id().to_string());
+    assert!(
+        random.len() == 4 && random.chars().all(|c| c.is_ascii_hexdigit()),
+        "{name}"
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(source.exists(), "the original stays");
+}
+
+#[skuld::test]
+fn a_copy_of_a_large_file_is_complete(#[fixture(unicode_home)] home: &Path) {
+    let bytes: Vec<u8> = (0..6u32 << 20).map(|n| (n % 251) as u8).collect();
+    let source = source_of(home, &bytes);
+    let copy = copy_of(&home.join("logs"), &source, &mut Vec::new()).unwrap();
+    assert!(
+        std::fs::read(&copy).unwrap() == bytes,
+        "the copy differs from the {} byte original",
+        bytes.len()
+    );
+}
+
+#[skuld::test]
+fn two_kept_copies_of_one_file_have_different_names(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("logs");
+    let source = source_of(home, b"x");
+    let (first, second) = (
+        copy_of(&dir, &source, &mut Vec::new()).unwrap(),
+        copy_of(&dir, &source, &mut Vec::new()).unwrap(),
+    );
+    assert_ne!(first, second);
+    assert!(first.exists() && second.exists());
+}
+
+#[skuld::test]
+fn a_kept_copy_is_the_users_alone(#[fixture(unicode_home)] home: &Path) {
+    let loose = home.join("loose state");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    let me = crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let source = source_of(home, b"secret");
+    let copy = copy_of(&loose.join("logs"), &source, &mut Vec::new()).unwrap();
+    assert_eq!(file_mode::mode(&copy), cfg!(unix).then_some(0o600));
+    #[cfg(windows)]
+    crate::test_support::private_files::assert_is_the_users_alone(&copy, &me);
+}
+
+#[skuld::test]
+fn owner_of_a_kept_copy_is_this_process(#[fixture(unicode_home)] home: &Path) {
+    let source = source_of(home, b"x");
+    let copy = copy_of(&home.join("logs"), &source, &mut Vec::new()).unwrap();
+    assert_eq!(
+        owner_of(copy.file_name().unwrap().to_str().unwrap()),
+        Some(std::process::id())
+    );
+}
+
+#[skuld::test]
+fn keeping_a_copy_prunes_old_copies_and_the_old_logs_of_processes_that_are_gone(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let put = |name: &str, days: u64| -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, "x").unwrap();
+        age(&path, days);
+        path
+    };
+    let running_log = put("devvm-20260101T000000Z-7-aaaa.log", 60);
+    let running_copy = put("devvm-20260101T000000Z-7-bbbb.serial.log", 60);
+    let gone_log = put("devvm-20260101T000000Z-8-cccc.log", 60);
+    let gone_copy = put("devvm-20260101T000000Z-8-dddd.serial.log", 60);
+    let recent_copy = put("devvm-20261110T000000Z-8-eeee.serial.log", 5);
+    let source = source_of(home, b"x");
+
+    let copy = keep_copy_with(&dir, &FixedClock(noon()), &source, &mut |_| {}, &|pid| pid == 7).unwrap();
+
+    assert!(
+        running_log.exists(),
+        "the process 7 is running, and may still write its log"
+    );
+    assert!(
+        !running_copy.exists() && !gone_log.exists() && !gone_copy.exists(),
+        "a copy is complete when made, whoever made it; the process 8 is gone"
+    );
+    assert!(recent_copy.exists() && copy.exists());
+}
+
+#[skuld::test]
+fn a_log_that_is_gone_when_its_age_is_asked_is_not_a_warning() {
+    let path = Path::new("devvm-20260101T000000Z-8-aaaa.log");
+    let mut warnings = Vec::new();
+    prune_one(
+        path,
+        "devvm-20260101T000000Z-8-aaaa.log",
+        Err(std::io::ErrorKind::NotFound.into()),
+        noon(),
+        &|_| false,
+        &mut warnings,
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    prune_one(
+        path,
+        "devvm-20260101T000000Z-8-aaaa.log",
+        Err(std::io::ErrorKind::PermissionDenied.into()),
+        noon(),
+        &|_| false,
+        &mut warnings,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("cannot tell the age"), "{warnings:?}");
+}
+
+/// A file another process holds open without sharing deletion cannot be removed by the prune.
+#[cfg(windows)]
+#[skuld::test]
+fn a_prune_warning_goes_to_warn_and_the_copy_is_still_made(#[fixture(unicode_home)] home: &Path) {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+    let dir = home.join("logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join("devvm-20260101T000000Z-8-aaaa.log");
+    std::fs::write(&old, "x").unwrap();
+    age(&old, 60);
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&old)
+        .unwrap();
+    let source = source_of(home, b"kept");
+
+    let mut warnings = Vec::new();
+    let copy = keep_copy_with(
+        &dir,
+        &FixedClock(noon()),
+        &source,
+        &mut |warning| warnings.push(warning.to_owned()),
+        &|_| false,
+    );
+    drop(held);
+
+    let copy = copy.unwrap();
+    assert_eq!(std::fs::read(copy).unwrap(), b"kept");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("cannot remove the old log") && warnings[0].contains("aaaa"),
+        "{warnings:?}"
+    );
+}
+
+#[skuld::test]
+fn a_source_that_is_not_there_is_an_error_naming_it_and_makes_no_file(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("logs");
+    let source = home.join("absent.log");
+    let error = copy_of(&dir, &source, &mut Vec::new()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    assert!(error.to_string().contains(&source.display().to_string()), "{error}");
+    assert!(!dir.exists() || std::fs::read_dir(&dir).unwrap().next().is_none());
 }

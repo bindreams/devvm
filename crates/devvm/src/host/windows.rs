@@ -179,7 +179,7 @@ impl Host for WindowsHost {
     }
 
     /// See [`private_file::create_new`].
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         fill_new(private_file::create_new(path)?, path, bytes)
     }
 
