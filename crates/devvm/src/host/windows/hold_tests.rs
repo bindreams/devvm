@@ -67,7 +67,7 @@ fn a_hold_shared_with_a_process_keeps_the_file_held_until_the_process_is_gone(#[
     let hold = current().hold_new(&path).unwrap();
     let mut vm = fake_vm::frozen(home, Lifetime::DiesWithOwner);
 
-    hold.share_with(vm.id()).unwrap();
+    current().share_open_file_with(hold.file(), vm.id()).unwrap();
     drop(hold);
     assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
 

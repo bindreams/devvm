@@ -11,8 +11,6 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cosca::identity::ProcessId;
-
 use super::FileId;
 use crate::random;
 
@@ -71,14 +69,8 @@ pub(crate) fn claim_of_deleting_name(name: &str) -> Option<&str> {
 /// An exclusive hold on a file, and the open file that carries it.
 pub(crate) trait Hold: Send + fmt::Debug {
     /// The held file. A duplicate of it keeps the hold, so it goes to another process only through
-    /// [`Hold::share_with`].
+    /// [`Host::share_open_file_with`](crate::host::Host::share_open_file_with).
     fn file(&self) -> &File;
-
-    /// Puts a duplicate of the held file in `process`, which keeps the hold after this one is dropped, until it exits.
-    /// The duplicate is not inheritable, so no other process ever gets it: a handle made inheritable for a child's
-    /// spawn is inherited by any process spawned meanwhile. The caller holds `process` open, so its identity cannot be
-    /// taken by another.
-    fn share_with(&self, process: ProcessId) -> io::Result<()>;
 
     /// The identity of the held file, read from the open file and not from a name: a name can be given to another file
     /// while the hold is kept.

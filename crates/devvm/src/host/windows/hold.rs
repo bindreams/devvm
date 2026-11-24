@@ -281,10 +281,10 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
     }
 }
 
-/// [`Host::share_open_file_with`](crate::host::Host::share_open_file_with), and what [`Hold::share_with`] does for the
-/// held file: duplicates the handle of `file` into `process` with access 0 and not inheritable. What `file` was opened
-/// with (its share mode) belongs to the file object, so the duplicate keeps it, and `process` has no write or delete
-/// access through it.
+/// [`Host::share_open_file_with`](crate::host::Host::share_open_file_with): duplicates the handle of `file` into
+/// `process` with access 0 and not inheritable. What `file` was opened with (its share mode) belongs to the file
+/// object, so the duplicate keeps it, and `process` has no write or delete access through it. A handle made
+/// inheritable for a child's spawn would be inherited by any process spawned meanwhile.
 pub(super) fn share_open_file(file: &File, process: ProcessId) -> std::io::Result<()> {
     // SAFETY: plain `OpenProcess`; no pointers.
     let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, process.pid()) };
@@ -316,10 +316,6 @@ pub(super) fn share_open_file(file: &File, process: ProcessId) -> std::io::Resul
 impl Hold for WindowsHold {
     fn file(&self) -> &File {
         &self.file
-    }
-
-    fn share_with(&self, process: ProcessId) -> std::io::Result<()> {
-        share_open_file(&self.file, process)
     }
 
     fn id(&self) -> std::io::Result<FileId> {

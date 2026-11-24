@@ -363,6 +363,9 @@ pub struct RecordingHost {
     holds_made: Mutex<Vec<PathBuf>>,
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
+    /// Every open file given to a process by `share_open_file_with`, as the file's identity and the process's PID, in
+    /// call order, failed calls included.
+    shared_files: Mutex<Vec<(FileId, u32)>>,
     /// What `free_space` answers for a directory; the real host answers for any other.
     free_space: Mutex<HashMap<PathBuf, std::result::Result<u64, String>>>,
 }
@@ -453,6 +456,12 @@ impl RecordingHost {
     /// The paths given to `hold_new`, in call order.
     pub fn holds_made(&self) -> Vec<PathBuf> {
         self.holds_made.lock().unwrap().clone()
+    }
+
+    /// The open files given to a process by `share_open_file_with`, in call order: each file's identity (read from the
+    /// open file, as `file_id_of_open` gives it) and the PID of the process it went to.
+    pub fn shared_files(&self) -> Vec<(FileId, u32)> {
+        self.shared_files.lock().unwrap().clone()
     }
 
     /// Makes `free_space` of exactly `dir` answer `answer`: the bytes, or the text of the failure.
@@ -670,6 +679,8 @@ impl Host for RecordingHost {
     }
 
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()> {
+        let id = TestHost.file_id_of_open(file)?;
+        self.shared_files.lock().unwrap().push((id, process.pid()));
         TestHost.share_open_file_with(file, process)
     }
 

@@ -19,6 +19,10 @@ use crate::{Error, ErrorKind, Result};
 #[path = "backend_tests.rs"]
 mod backend_tests;
 
+#[cfg(all(test, windows))]
+#[path = "backend_windows_tests.rs"]
+mod backend_windows_tests;
+
 pub(crate) struct QemuBackend {
     install: Arc<LazyInstall>,
     storage: Arc<QemuStorage>,
@@ -108,7 +112,8 @@ impl QemuBackend {
         let log_from = log_length(&log)?;
         let vm = started.insert(VmProcess::spawn_frozen(self.host, &tool, command, spec.lifetime, &log)?);
         // QEMU keeps the hold, unused, until it exits or is killed.
-        hold.share_with(vm.id())
+        self.host
+            .share_open_file_with(hold.file(), vm.id())
             .map_err(|e| Error::io(ErrorKind::Io, "cannot give the launch's hold to QEMU", e))?;
         // Likewise the hold on the install: it lasts as long as this QEMU runs, whether or not this devvm does. A
         // configured QEMU is the user's own and holds nothing.
