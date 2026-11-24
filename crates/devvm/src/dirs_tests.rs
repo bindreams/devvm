@@ -36,6 +36,17 @@ fn the_variables_of_a_root_resolve_to_the_directories_below_it(#[fixture(unicode
 }
 
 #[skuld::test]
+fn the_variables_of_a_relative_root_panic_naming_it() {
+    let outcome = std::panic::catch_unwind(|| Dirs::env_under(Path::new("relative/root")));
+
+    let payload = outcome.expect_err("a relative root has no variables: from_lookup would ignore them");
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("the panic carries a formatted message");
+    assert!(message.contains("relative/root"), "the panic names the root: {message}");
+}
+
+#[skuld::test]
 fn xdg_overrides_are_honored_for_all_four(#[fixture(unicode_home)] home: &Path) {
     let base = home.join("x y");
     let vars = [

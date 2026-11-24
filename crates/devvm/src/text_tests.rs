@@ -23,10 +23,14 @@ fn every_character_that_reorders_or_splits_a_line_is_written_as_an_escape() {
     }
 }
 
-/// The characters next to the ends of the set's ranges: a widened range escapes one of them.
+/// Characters just outside the set, at its single entries (U+061C, U+2028) and at the ends of its ranges: a set widened
+/// at one of those places escapes one of them. Not every boundary is listed.
 #[skuld::test]
 fn the_neighbours_of_that_set_stay_as_they_are() {
-    for c in ['\u{200b}', '\u{200d}', '\u{2060}', '\u{2065}', '\u{206a}', '\u{202f}'] {
+    for c in [
+        '\u{61b}', '\u{61d}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2027}', '\u{202f}', '\u{2060}', '\u{2065}',
+        '\u{206a}',
+    ] {
         let text = format!("a{c}b");
         assert_eq!(escape_controls(&text), text);
     }
