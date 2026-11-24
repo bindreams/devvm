@@ -24,8 +24,10 @@ pub(crate) enum ExecEnd {
     /// refusal to run the command) or what ended the wait (the VM exited, the boot bound passed); `lost` says what.
     /// The status stands: the error that follows an exit status does not take it back.
     FinishedWithLoss { status: ExitStatus, lost: Error },
-    /// The host side of the output closed. `exec` returns at once without waiting for a status; the task closes the
-    /// channel, which ends the guest process by SIGPIPE.
+    /// The host side of the output closed. `exec` returns at once without waiting for a status. The task sends the
+    /// channel close after `exec` has returned (and gives it up when the connection cannot take it), so the guest
+    /// process loses its output pipe and ends at its own next write (SIGPIPE); one that writes nothing runs on until it
+    /// ends or the instance stops.
     HostOutputClosed {
         /// The failed write or flush.
         error: std::io::Error,

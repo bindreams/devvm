@@ -217,8 +217,10 @@ impl Instance {
     /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives, and returns how it ended.
     ///
     /// Output the guest sent after the command's status that devvm cannot carry is reported on the progress channel;
-    /// the status stands. A writer that fails is an `io` error, and the guest command is stopped, unless the command had
-    /// already ended: the error then names its status.
+    /// the status stands. A writer that fails is an `io` error, unless the command had already ended: the error then
+    /// names its status. `run_to` returns without waiting for the channel close, which a task sends after it: the guest
+    /// command loses its output pipe and ends at its next write, and one that writes nothing runs until it ends or the
+    /// instance stops. The op lock is released when `run_to` returns.
     pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
         let (guest, session, _op) = self.reached()?;
         ops::run_to(&self.engine, &*guest, &session, cmd, out, err)
