@@ -59,6 +59,25 @@ use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
 
+#[cfg_attr(
+    not(test),
+    allow(
+        unused_imports,
+        reason = "only the tests set a time the trait cannot say; `Host::set_mtime` calls it"
+    )
+)]
+#[cfg(not(windows))]
+pub(crate) use unsupported::set_modified;
+#[cfg_attr(
+    not(test),
+    allow(
+        unused_imports,
+        reason = "only the tests set a time the trait cannot say; `Host::set_mtime` calls it"
+    )
+)]
+#[cfg(windows)]
+pub(crate) use windows::set_modified;
+
 /// How a hypervisor is reached on this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Accel {
@@ -160,8 +179,8 @@ pub(crate) trait Host: Send + Sync {
     /// Adds execute where read is set; does nothing on Windows.
     fn set_executable(&self, path: &Path) -> std::io::Result<()>;
 
-    /// Sets the modification time of the file or directory `path` to `seconds` since 1970. It needs no write access to
-    /// the contents, so a file that is read-only to its owner takes it.
+    /// Sets the modification time of the file or directory `path` to `seconds` since 1970 ([`set_modified`] takes any
+    /// date). It needs no write access to the contents, so a file that is read-only to its owner takes it.
     fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()>;
 
     /// Why `name`, a file name taken from a guest, cannot be one file name in a directory on this host (a Windows
