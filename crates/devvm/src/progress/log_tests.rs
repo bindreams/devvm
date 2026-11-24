@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use crate::error::{Error, ErrorKind};
 use crate::exit::format_error_line;
 use crate::host::Host;
-use crate::progress::log::{FileLog, keep_copy, keep_copy_with, owner_of};
+use crate::progress::log::{FileLog, keep_copy, keep_copy_with, owner_of, prune_one};
 use crate::progress::{Event, Progress, Task, Total};
 use crate::store::layers::Clock;
 use crate::test_support::file_mode;
@@ -454,6 +454,32 @@ fn keeping_a_copy_prunes_old_copies_and_the_old_logs_of_processes_that_are_gone(
         "a copy is complete when made, whoever made it; the process 8 is gone"
     );
     assert!(recent_copy.exists() && copy.exists());
+}
+
+#[skuld::test]
+fn a_log_that_is_gone_when_its_age_is_asked_is_not_a_warning() {
+    let path = Path::new("devvm-20260101T000000Z-8-aaaa.log");
+    let mut warnings = Vec::new();
+    prune_one(
+        path,
+        "devvm-20260101T000000Z-8-aaaa.log",
+        Err(std::io::ErrorKind::NotFound.into()),
+        noon(),
+        &|_| false,
+        &mut warnings,
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    prune_one(
+        path,
+        "devvm-20260101T000000Z-8-aaaa.log",
+        Err(std::io::ErrorKind::PermissionDenied.into()),
+        noon(),
+        &|_| false,
+        &mut warnings,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("cannot tell the age"), "{warnings:?}");
 }
 
 /// A file another process holds open without sharing deletion cannot be removed by the prune.

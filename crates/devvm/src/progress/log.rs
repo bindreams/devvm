@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use cosca::identity::{Liveness, Resolved};
 
 use crate::error::{Error, ErrorKind, Result};
-use crate::host::{self, remove_if_present};
+use crate::host::{self, is_absent, remove_if_present};
 use crate::progress::{Event, Level, Outcome, Progress, TaskId, Total, escape_controls};
 use crate::random;
 use crate::store::layers::Clock;
@@ -283,24 +283,36 @@ fn prune(dir: &Path, now: SystemTime, alive: &dyn Fn(u32) -> bool) -> Vec<String
             Ok(_) => continue,
             Err(e) => Err(e),
         };
-        match modified {
-            Ok(modified) if now.duration_since(modified).is_ok_and(|age| age > KEEP) => {
-                // A kept copy is complete when made; a run log may still be written.
-                if !name.ends_with(SERIAL_COPY) && owner_of(name).is_some_and(alive) {
-                    continue;
-                }
-                if let Err(e) = remove_if_present(&entry.path()) {
-                    warnings.push(format!("cannot remove the old log {}: {e}", entry.path().display()));
-                }
-            }
-            Ok(_) => {}
-            Err(e) => warnings.push(format!(
-                "cannot tell the age of the log {}: {e}",
-                entry.path().display()
-            )),
-        }
+        prune_one(&entry.path(), name, modified, now, alive, &mut warnings);
     }
     warnings
+}
+
+/// Removes the log at `path`, named `name`, if its age (from `modified`) is more than [`KEEP`] by `now` and `alive` does
+/// not say its run is running; adds what goes wrong to `warnings`.
+fn prune_one(
+    path: &Path,
+    name: &str,
+    modified: std::io::Result<SystemTime>,
+    now: SystemTime,
+    alive: &dyn Fn(u32) -> bool,
+    warnings: &mut Vec<String>,
+) {
+    match modified {
+        Ok(modified) if now.duration_since(modified).is_ok_and(|age| age > KEEP) => {
+            // A kept copy is complete when made; a run log may still be written.
+            if !name.ends_with(SERIAL_COPY) && owner_of(name).is_some_and(alive) {
+                return;
+            }
+            if let Err(e) = remove_if_present(path) {
+                warnings.push(format!("cannot remove the old log {}: {e}", path.display()));
+            }
+        }
+        Ok(_) => {}
+        // Another prune removed it between the listing and the look.
+        Err(e) if is_absent(&e) => {}
+        Err(e) => warnings.push(format!("cannot tell the age of the log {}: {e}", path.display())),
+    }
 }
 
 impl Progress for FileLog {
