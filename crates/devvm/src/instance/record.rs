@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::MachineRecord;
 use crate::contain::cosca_error;
-use crate::host::{self, Host, remove_if_present, remove_tree};
+use crate::host::{self, Host, remove_if_present};
 use crate::instance::name::InstanceName;
 use crate::random;
 use crate::recipe::hash::LayerKey;
@@ -500,7 +500,7 @@ pub(crate) fn write_holder(dir: &Path, holder: &Holder) -> Result<()> {
 /// Removes `holder.json`; one that is not there is as good as removed.
 pub(crate) fn remove_holder(dir: &Path) -> Result<()> {
     let path = dir.join(HOLDER_FILE);
-    remove_tree(&path).map_err(|e| Error::io(ErrorKind::Io, format!("cannot remove {}", path.display()), e))
+    remove_if_present(&path).map_err(|e| Error::io(ErrorKind::Io, format!("cannot remove {}", path.display()), e))
 }
 
 /// Replaces `owner.json` atomically.
