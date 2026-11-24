@@ -442,13 +442,17 @@ fn the_image_is_fat12_whatever_the_contents() {
 }
 
 /// The limit is tight: one byte more than [`LARGEST_FAT12_CONTENTS`], at the size the formula gives, does not format as
-/// FAT12 (`fatfs` either fails or picks another type).
+/// FAT12: `fatfs` 0.3.6 fails to select a FAT type, and a version that picks another type must not give FAT12 either.
 #[skuld::test]
 fn one_byte_beyond_the_fat12_limit_does_not_format_as_fat12() {
     let size = unchecked_image_size(LARGEST_FAT12_CONTENTS + 1) as u64;
     let mut disk = Cursor::new(vec![0u8; size as usize]);
-    if fatfs::format_volume(&mut disk, format_options(size)).is_ok() {
-        assert_ne!(type_of(disk.into_inner()), fatfs::FatType::Fat12);
+    match fatfs::format_volume(&mut disk, format_options(size)) {
+        Ok(()) => assert_ne!(type_of(disk.into_inner()), fatfs::FatType::Fat12),
+        Err(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::Other, "{error}");
+            assert_eq!(error.to_string(), "Cannot select FAT type - unfortunate disk size");
+        }
     }
 }
 
