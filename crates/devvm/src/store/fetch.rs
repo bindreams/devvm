@@ -14,6 +14,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256 as Sha2};
 
+use crate::error::text_with_sources;
 use crate::progress::{Progress, Total, human_bytes};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result, Sha256};
@@ -256,8 +257,9 @@ impl Fetcher {
                     return Err(Error::new(
                         ErrorKind::Download,
                         format!(
-                            "download of {} stopped after {done} bytes: {e}; the partial file is kept for a retry",
-                            artifact.url
+                            "download of {} stopped after {done} bytes: {}; the partial file is kept for a retry",
+                            artifact.url,
+                            text_with_sources(&e)
                         ),
                     )
                     .with_source(e));

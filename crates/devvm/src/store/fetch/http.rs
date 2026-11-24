@@ -9,6 +9,7 @@ use reqwest::header::{
 };
 
 use super::{ContentRange, Response, Resume, Transport};
+use crate::error::text_with_sources;
 use crate::lazy::Lazy;
 use crate::{Error, ErrorKind, Result};
 
@@ -35,7 +36,11 @@ impl HttpTransport {
             .user_agent(concat!("devvm/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| {
-                Error::new(ErrorKind::Internal, format!("cannot build the HTTP client: {e}")).with_source(e)
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("cannot build the HTTP client: {}", text_with_sources(&e)),
+                )
+                .with_source(e)
             })?;
         Ok(HttpTransport { client, stall })
     }
@@ -189,7 +194,7 @@ impl Transport for HttpTransport {
             let why = if e.is_timeout() {
                 stall_message(url, self.stall)
             } else {
-                e.to_string()
+                text_with_sources(&e)
             };
             Error::new(ErrorKind::Download, format!("cannot fetch {url}: {why}")).with_source(e)
         })?;

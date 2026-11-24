@@ -329,3 +329,30 @@ fn malformed_length_and_range_headers_are_named_in_warnings() {
     assert_eq!(head.content_length, Some(10));
     assert!(head.warnings.is_empty());
 }
+
+#[skuld::test]
+fn a_refused_connection_says_why_in_the_message() {
+    use std::error::Error as _;
+
+    use super::Transport;
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url = format!("http://127.0.0.1:{port}/disk.img");
+    let error = HttpTransport::new()
+        .unwrap()
+        .get(&url, None)
+        .err()
+        .expect("nothing listens on the port");
+    let mut cause = error.source().expect("the request error is the source");
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    assert!(
+        error.message().starts_with(&format!("cannot fetch {url}: ")) && error.message().contains(&cause.to_string()),
+        "{error}"
+    );
+}

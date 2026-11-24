@@ -923,3 +923,50 @@ fn failed_restart_keeps_the_old_validator_with_the_old_part(#[fixture(unicode_ho
         .unwrap_or_else(|e| panic!("the remote is healthy, yet: {e}"));
     assert_eq!(std::fs::read(entry).unwrap(), good);
 }
+
+/// A body whose read fails with an error that has a cause beneath it, as `reqwest`'s does.
+struct CausedBody;
+
+#[derive(Debug)]
+struct Cause(&'static str, Option<Box<dyn std::error::Error + Send + Sync>>);
+
+impl std::fmt::Display for Cause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Cause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.1.as_deref().map(|source| source as _)
+    }
+}
+
+impl Read for CausedBody {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        let reset = Cause("connection reset by peer", None);
+        Err(std::io::Error::other(Cause(
+            "error decoding response body",
+            Some(Box::new(reset)),
+        )))
+    }
+}
+
+#[skuld::test]
+fn a_body_that_fails_says_why_in_the_message(#[fixture(unicode_home)] home: &Path) {
+    let transport = Script::new(|_, _| {
+        Ok(Response {
+            body: Box::new(CausedBody),
+            ..response(200, Vec::new(), None, false)
+        })
+    });
+    let setup = setup(home, transport);
+    let error = setup.fetcher.fetch(&artifact(b"x")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Download);
+    assert!(
+        error
+            .message()
+            .contains("error decoding response body: connection reset by peer"),
+        "{error}"
+    );
+}

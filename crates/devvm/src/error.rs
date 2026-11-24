@@ -170,6 +170,22 @@ impl std::error::Error for Error {
     }
 }
 
+/// The text of `error` followed by the text of each error beneath it, `: ` between them, so a message carries the cause
+/// (DNS, refused, TLS) and not only the top layer. A source whose text an earlier layer already says is left out.
+pub(crate) fn text_with_sources(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut next = error.source();
+    while let Some(source) = next {
+        let said = source.to_string();
+        if !text.contains(&said) {
+            text.push_str(": ");
+            text.push_str(&said);
+        }
+        next = source.source();
+    }
+    text
+}
+
 pub(crate) const TAIL_LINES: usize = 20;
 
 /// The last [`TAIL_LINES`] lines of `text`, with the line ends of a Windows file taken off.
