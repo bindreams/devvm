@@ -243,6 +243,10 @@ fn an_install_whose_hold_was_given_to_a_process_stays_whole_until_that_process_e
     assert_eq!(visible(&qemu).len(), 2, "{:?}", entries(&qemu));
     vm.kill().unwrap();
 
-    second.source.resolve().unwrap();
+    // The kill returning does not say the dead process's handles are closed yet, so resolve until the install goes.
+    while visible(&qemu).len() > 1 {
+        second.source.resolve().unwrap();
+        std::thread::yield_now();
+    }
     assert!(!installed.exists(), "{:?}", entries(&qemu));
 }
