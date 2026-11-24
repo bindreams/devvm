@@ -336,11 +336,10 @@ fn a_refused_connection_says_why_in_the_message() {
 
     use super::Transport;
 
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    // Bound and never listening: the port stays ours for the whole test, and a connection to it is refused.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = socket.local_addr().unwrap().port();
     let url = format!("http://127.0.0.1:{port}/disk.img");
     let error = HttpTransport::new()
         .unwrap()
