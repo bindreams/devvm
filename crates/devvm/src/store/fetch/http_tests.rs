@@ -1,11 +1,64 @@
 use std::time::Duration;
 
 use super::ContentRange;
-use super::http::{parse_content_range, read_head, stall_message};
+use super::http::{comes_from_below, parse_content_range, read_head, stall_message};
 
 #[skuld::test]
 fn stall_error_text_names_seconds() {
     assert_eq!(stall_message(Duration::from_secs(60)), "no data for 60s");
+}
+
+/// An error layer with another error beneath it, as `reqwest` and `hyper` stack theirs.
+#[derive(Debug)]
+struct Layer(Box<dyn std::error::Error + Send + Sync>);
+
+impl std::fmt::Display for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("layer")
+    }
+}
+
+impl std::error::Error for Layer {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.0)
+    }
+}
+
+/// The error `tokio::time::timeout` returns when its time is up.
+fn elapsed() -> tokio::time::error::Elapsed {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async { tokio::time::timeout(Duration::ZERO, std::future::pending::<()>()).await })
+        .unwrap_err()
+}
+
+#[skuld::test]
+fn an_io_error_beneath_the_request_error_comes_from_below_whatever_its_kind() {
+    use std::io::{Error, ErrorKind};
+
+    for io in [
+        Error::from(ErrorKind::TimedOut),
+        Error::from(ErrorKind::ConnectionRefused),
+        Error::from_raw_os_error(1),
+        Error::new(ErrorKind::TimedOut, "connection timed out"),
+    ] {
+        let text = io.to_string();
+        assert!(comes_from_below(&Layer(Box::new(Layer(Box::new(io))))), "{text}");
+    }
+}
+
+#[skuld::test]
+fn a_timeout_devvm_set_does_not_come_from_below() {
+    use std::io::{Error, ErrorKind};
+
+    // `hyper-util`'s connect timeout: an `io::Error` of kind `TimedOut` holding tokio's `Elapsed`.
+    let connect = Error::new(ErrorKind::TimedOut, elapsed());
+    assert!(!comes_from_below(&Layer(Box::new(Layer(Box::new(connect))))));
+    // `reqwest`'s own marker, and any other layer with no `io::Error` in it.
+    assert!(!comes_from_below(&Layer(Box::new(std::fmt::Error))));
+    assert!(!comes_from_below(&std::fmt::Error));
 }
 
 #[skuld::test]

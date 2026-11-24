@@ -97,19 +97,36 @@ struct Body {
     stall: Duration,
 }
 
-/// Whether a body read failed for lack of data. `reqwest`'s blocking body wraps its timeout in an `io::Error` of kind
-/// `Other`, so the kind alone does not say.
-fn is_stall(e: &std::io::Error) -> bool {
-    e.kind() == std::io::ErrorKind::TimedOut
-        || e.get_ref()
-            .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
-            .is_some_and(reqwest::Error::is_timeout)
+/// Whether `e` is the expiry of the bound `with_stall` sets, and not a timeout the operating system reported.
+/// `reqwest::Error::is_timeout` is true for both.
+fn is_stall(e: &reqwest::Error) -> bool {
+    e.is_timeout() && !comes_from_below(e)
+}
+
+/// Whether an `io::Error` the operating system or the network stack made is in the chain of `e`. The timeouts devvm
+/// sets are `reqwest`'s own marker error and, for the connect, an `io::Error` of kind `TimedOut` that holds tokio's
+/// `Elapsed`; every other `io::Error` is from below.
+pub(super) fn comes_from_below(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut next = Some(e);
+    while let Some(layer) = next {
+        if let Some(io) = layer.downcast_ref::<std::io::Error>() {
+            return !io
+                .get_ref()
+                .is_some_and(|inner| inner.is::<tokio::time::error::Elapsed>());
+        }
+        next = layer.source();
+    }
+    false
 }
 
 impl Read for Body {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read(buf).map_err(|e| {
-            if is_stall(&e) {
+            let stalled = e
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
+                .is_some_and(is_stall);
+            if stalled {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, stall_message(self.stall))
             } else {
                 e
@@ -191,7 +208,7 @@ impl Transport for HttpTransport {
         }
         let response = request.send().map_err(|e| {
             let e = e.without_url();
-            let why = if e.is_timeout() {
+            let why = if is_stall(&e) {
                 stall_message(self.stall)
             } else {
                 text_with_sources(&e)
