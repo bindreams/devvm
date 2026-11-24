@@ -190,9 +190,9 @@ fn tool_outcome(program: &str, command: &mut Command) -> std::result::Result<Str
     let first_line = |bytes: &[u8]| {
         String::from_utf8_lossy(bytes)
             .lines()
-            .next()
-            .map(|line| line.trim().to_owned())
-            .filter(|line| !line.is_empty())
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
     };
     let (stdout, stderr) = (first_line(&output.stdout), first_line(&output.stderr));
     if !output.status.success() {

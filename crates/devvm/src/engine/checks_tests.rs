@@ -222,6 +222,42 @@ fn a_tool_that_exits_non_zero_fails_with_the_first_line_it_said_on_stderr() {
 }
 
 #[skuld::test]
+fn a_tool_that_exits_non_zero_names_the_first_line_that_is_not_blank() {
+    let why = tool_check(
+        "tool",
+        tool_saying(
+            "",
+            "
+ 
+usage: tool
+second line",
+            2,
+        ),
+    )
+    .outcome
+    .expect_err("the tool exits with 2");
+
+    assert!(why.ends_with("): usage: tool"), "{why}");
+}
+
+#[skuld::test]
+fn a_tool_that_exits_non_zero_with_only_stdout_fails_with_the_first_line_of_stdout() {
+    let why = tool_check(
+        "tool",
+        tool_saying(
+            "not found
+second line",
+            "",
+            2,
+        ),
+    )
+    .outcome
+    .expect_err("the tool exits with 2");
+
+    assert!(why.ends_with("): not found"), "{why}");
+}
+
+#[skuld::test]
 fn a_tool_that_exits_non_zero_without_a_word_fails_on_its_status_alone() {
     let why = tool_check("tool", tool_saying("", "", 3))
         .outcome
