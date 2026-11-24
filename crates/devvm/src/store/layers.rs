@@ -545,6 +545,13 @@ pub(crate) fn date_text(time: SystemTime) -> String {
     }
 }
 
+/// The instant an RFC 3339 timestamp names; the error text is the one a corrupt record reports.
+pub(crate) fn time_parse(text: &str) -> std::result::Result<SystemTime, String> {
+    text.parse::<jiff::Timestamp>()
+        .map(SystemTime::from)
+        .map_err(|e| format!("bad time `{text}`: {e}"))
+}
+
 /// What `<key>/current` holds.
 pub(super) enum CurrentFile {
     Absent,

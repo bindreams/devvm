@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::random;
 use crate::recipe::hash::LayerKey;
+use crate::store::layers::time_parse;
 use crate::{Error, ErrorKind, Result};
 
 /// The `meta.json` schema this devvm writes and reads.
@@ -115,12 +116,6 @@ fn time_text(time: SystemTime) -> Result<String> {
     jiff::Timestamp::try_from(time)
         .map(|timestamp| timestamp.to_string())
         .map_err(|e| Error::new(ErrorKind::Store, format!("time out of range: {e}")))
-}
-
-fn time_parse(text: &str) -> std::result::Result<SystemTime, String> {
-    text.parse::<jiff::Timestamp>()
-        .map(SystemTime::from)
-        .map_err(|e| format!("bad time `{text}`: {e}"))
 }
 
 impl LayerMeta {
