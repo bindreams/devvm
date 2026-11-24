@@ -8,7 +8,7 @@ use rustix::io::Errno;
 
 use super::entry;
 use super::unsupported::{FileModes, claim_then_rename};
-use super::{Entry, FileId};
+use super::{Entry, FileId, MakePrivateOutcome};
 
 #[cfg(test)]
 #[path = "unix_tests.rs"]
@@ -23,8 +23,13 @@ impl FileModes for UnixHost {
         options
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<()> {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
+        const PRIVATE: u32 = 0o600;
+        if std::fs::metadata(path)?.permissions().mode() & 0o7777 == PRIVATE {
+            return Ok(MakePrivateOutcome::Unchanged);
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE))?;
+        Ok(MakePrivateOutcome::Changed)
     }
 
     fn hold_options(&self) -> OpenOptions {

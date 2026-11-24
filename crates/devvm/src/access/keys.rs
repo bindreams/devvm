@@ -171,20 +171,21 @@ impl InstanceKeys {
         Ok(warnings)
     }
 
-    /// [`read`](InstanceKeys::read), and makes the two private key files the user's alone ([`Host::make_private`]): keys
-    /// written before they were created private, which OpenSSH for Windows refuses, are repaired where they are read.
-    /// An error names the key that could not be restricted.
-    pub(crate) fn read_private(host: &dyn Host, dir: &Path) -> Result<InstanceKeys> {
+    /// [`read`](InstanceKeys::read), and makes each of the two private key files the user's alone
+    /// ([`Host::make_private`]) if it is not: keys written before they were created private, which OpenSSH refuses,
+    /// are repaired where they are read. A key that is not private and cannot be made so is a warning to `warn` naming
+    /// the key, not an error: devvm's own SSH client reads it as it is.
+    pub(crate) fn read_private(host: &dyn Host, dir: &Path, warn: &mut dyn FnMut(String)) -> Result<InstanceKeys> {
         let keys = InstanceKeys::read(dir)?;
         for name in [CLIENT, HOST] {
             let path = dir.join(name);
-            host.make_private(&path).map_err(|e| {
-                Error::io(
-                    ErrorKind::Io,
-                    format!("cannot make the key {} private to the current user", path.display()),
-                    e,
-                )
-            })?;
+            if let Err(e) = host.make_private(&path) {
+                warn(format!(
+                    "cannot make the key {} private to the current user ({e}); OpenSSH refuses it: `devvm ssh` and \
+                     anything that uses the ssh entry",
+                    path.display()
+                ));
+            }
         }
         Ok(keys)
     }

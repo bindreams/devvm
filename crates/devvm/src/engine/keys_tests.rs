@@ -11,7 +11,7 @@ use crate::host::symlink_metadata_if_present;
 use crate::instance::dir::InstanceDir;
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::host::TestHost;
+use crate::test_support::host::{RecordingHost, TestHost};
 
 const FILES: [&str; 4] = ["client", "client.pub", "host", "host.pub"];
 
@@ -125,6 +125,22 @@ fn keys_written_before_they_were_private_are_made_private_at_the_next_start(#[fi
     ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
 
     assert_private_keys(&dir);
+}
+
+#[skuld::test]
+fn keys_that_cannot_be_made_private_are_still_read_and_warned_about(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "foo", home);
+    let op = dir.op_exclusive().unwrap();
+    let written = ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
+    let host = RecordingHost::new();
+    host.fail_make_private();
+
+    let mut warnings = Vec::new();
+    let read = ensure_keys(&dir, &op, &host, &mut |text| warnings.push(text)).unwrap();
+
+    assert_eq!(read.host_public, written.host_public);
+    assert_eq!(warnings.len(), 2, "one warning per private key: {warnings:?}");
 }
 
 #[skuld::test]

@@ -10,7 +10,10 @@ use std::sync::{Arc, Mutex};
 use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, names};
+use crate::host::{
+    self, Accel, Entry, FileId, Hold, HoldOutcome, Host, MakePrivateOutcome, ProcessWatch, SystemDirs, Unavailable,
+    names,
+};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -66,7 +69,7 @@ impl Host for TestHost {
         host::current().write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
         host::current().make_private(path)
     }
 
@@ -224,7 +227,7 @@ impl Host for NoAccelHost {
         TestHost.write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
         TestHost.make_private(path)
     }
 
@@ -342,6 +345,7 @@ pub struct RecordingHost {
     executable: Mutex<HashSet<PathBuf>>,
     set_executable_calls: Mutex<Vec<PathBuf>>,
     fail_set_executable: AtomicBool,
+    fail_make_private: AtomicBool,
     /// `create_runtime_dir` removes the directory it has just made, as a user or a cleaner may between two calls.
     remove_runtime_dirs: AtomicBool,
     /// Every `file_id` fails: a test that needs the identity of a held file to come from the hold, not from its name.
@@ -422,6 +426,11 @@ impl RecordingHost {
     /// Makes every `set_executable` fail.
     pub fn fail_set_executable(&self) {
         self.fail_set_executable.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes every `make_private` fail.
+    pub fn fail_make_private(&self) {
+        self.fail_make_private.store(true, Ordering::SeqCst);
     }
 
     /// Makes `create_runtime_dir` remove the directory right after making it.
@@ -529,7 +538,10 @@ impl Host for RecordingHost {
         TestHost.write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
+        if self.fail_make_private.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("the test made this make_private fail"));
+        }
         TestHost.make_private(path)
     }
 
@@ -738,7 +750,7 @@ impl Host for NoGuestReset {
         host::current().write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
         host::current().make_private(path)
     }
 

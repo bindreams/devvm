@@ -11,6 +11,7 @@ use crate::instance::dir::{InstanceDir, OpExclusive, OpHeld};
 use crate::instance::expiry::warn_if_expired;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
+use crate::vm::warn_for;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -37,7 +38,7 @@ pub(crate) fn ensure_keys(
     warn: &mut dyn FnMut(String),
 ) -> Result<InstanceKeys> {
     let path = keys_dir(dir);
-    match InstanceKeys::read_private(host, &path) {
+    match InstanceKeys::read_private(host, &path, warn) {
         Err(e) if e.kind() == ErrorKind::NotFound => {
             let keys = InstanceKeys::generate()?;
             for warning in keys.write(host, &path)? {
@@ -112,7 +113,7 @@ pub(crate) fn running_of(
     let target = target_for(
         &record.name,
         machine,
-        &InstanceKeys::read_private(engine.host(), &keys_dir(dir))?,
+        &InstanceKeys::read_private(engine.host(), &keys_dir(dir), &mut warn_for(engine, dir))?,
     )?;
     Ok(Running {
         machine: found,

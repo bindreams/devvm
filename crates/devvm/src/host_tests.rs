@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::OtherHost;
-use super::{Comparison, FileId, HoldOutcome, Host, current, host_exit_width};
+use super::{Comparison, FileId, HoldOutcome, Host, MakePrivateOutcome, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
 use crate::test_groups::{Group, PINNED_CHILD, acp_1252, symlinks};
@@ -231,15 +231,29 @@ fn make_private_takes_an_existing_file_to_the_users_alone(#[fixture(unicode_home
     std::fs::write(&path, b"secret").unwrap();
     file_mode::set_mode(&path, 0o644);
 
-    current().make_private(&path).unwrap();
+    assert_eq!(current().make_private(&path).unwrap(), MakePrivateOutcome::Changed);
 
     assert_eq!(file_mode::mode(&path), cfg!(unix).then_some(0o600));
     #[cfg(windows)]
     crate::test_support::private_files::assert_is_the_users_alone(&path, &me);
     assert_eq!(std::fs::read(&path).unwrap(), b"secret", "the contents are left alone");
-    current()
-        .make_private(&path)
-        .expect("a file that is private already stays so");
+    assert_eq!(
+        current().make_private(&path).unwrap(),
+        MakePrivateOutcome::Unchanged,
+        "a file that is private already is left as it is"
+    );
+}
+
+#[skuld::test]
+fn make_private_leaves_a_file_write_private_made(#[fixture(unicode_home)] home: &Path) {
+    let loose = home.join("loose");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let path = loose.join("key");
+    current().write_private(&path, b"secret").unwrap();
+
+    assert_eq!(current().make_private(&path).unwrap(), MakePrivateOutcome::Unchanged);
 }
 
 #[skuld::test]

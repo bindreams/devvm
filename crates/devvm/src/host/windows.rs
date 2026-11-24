@@ -20,7 +20,9 @@ use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use super::Hold;
 use super::entry;
 use super::names::{windows_colon_path, windows_problem, windows_run_dir};
-use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, fill_new};
+use super::{
+    Accel, Entry, FileId, HoldOutcome, Host, MakePrivateOutcome, ProcessWatch, SystemDirs, Unavailable, fill_new,
+};
 use crate::exit::ExitWidth;
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -173,7 +175,7 @@ impl Host for WindowsHost {
     }
 
     /// See [`private_file::restrict`].
-    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
         private_file::restrict(path)
     }
 

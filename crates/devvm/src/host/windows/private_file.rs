@@ -12,6 +12,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::create_file::open;
 use super::security::Descriptor;
+use crate::host::MakePrivateOutcome;
 
 /// Creates `path`, which must not exist (`AlreadyExists` otherwise), open for writing, with the descriptor of
 /// [`Descriptor::user_only_file`]: the token's default owner (the user, or Administrators for an elevated token), and
@@ -33,14 +34,20 @@ pub(super) fn create_new(path: &Path) -> io::Result<File> {
 }
 
 /// Gives the existing file `path` the DACL of [`Descriptor::user_only_file`] in place of whatever it has, inherited or
-/// not. The file is opened without following a link, for `WRITE_DAC` and `READ_CONTROL` (`SetSecurityInfo` answers access
-/// denied without the second); its contents are not read or changed.
-pub(super) fn restrict(path: &Path) -> io::Result<()> {
-    let descriptor = Descriptor::user_only_file()?;
-    let file = OpenOptions::new()
-        .access_mode(WRITE_DAC | READ_CONTROL)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
-    descriptor.protect(&file)
+/// not, unless it has that DACL already. The file is opened without following a link, first for `READ_CONTROL` to look,
+/// and only if it must change for `WRITE_DAC` as well (`SetSecurityInfo` answers access denied without
+/// `READ_CONTROL`); its contents are not read or changed.
+pub(super) fn restrict(path: &Path) -> io::Result<MakePrivateOutcome> {
+    let open_for = |access| {
+        OpenOptions::new()
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    };
+    if Descriptor::user_only_file()?.is_the_dacl_of(&open_for(READ_CONTROL)?)? {
+        return Ok(MakePrivateOutcome::Unchanged);
+    }
+    Descriptor::user_only_file()?.protect(&open_for(WRITE_DAC | READ_CONTROL)?)?;
+    Ok(MakePrivateOutcome::Changed)
 }

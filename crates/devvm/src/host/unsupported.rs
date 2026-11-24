@@ -10,8 +10,8 @@ use cosca::identity::ProcessId;
 
 use super::names::{posix_problem, unix_run_dir};
 use super::{
-    Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
-    create_new_with, look_failed, nearest_existing_dir,
+    Accel, Entry, FileId, Hold, HoldOutcome, Host, MakePrivateOutcome, ProcessWatch, SystemDirs, Unavailable,
+    after_failed_write, create_new_with, look_failed, nearest_existing_dir,
 };
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -25,7 +25,7 @@ pub(super) trait FileModes: Send + Sync {
     fn private_options(&self) -> OpenOptions;
 
     /// [`Host::make_private`]: sets what `private_options` creates a file with.
-    fn make_private(&self, path: &Path) -> std::io::Result<()>;
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome>;
 
     /// Options that open a file for reading and writing, and refuse a symlink at its name instead of opening what it
     /// leads to where the system can.
@@ -156,7 +156,7 @@ impl<M: FileModes> Host for M {
         create_new_with(self.private_options(), path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
         FileModes::make_private(self, path)
     }
 

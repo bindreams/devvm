@@ -50,6 +50,15 @@ pub(crate) use hold::{DELETING_DRAW_BYTES, deleting_name};
 pub(crate) use hold::{Hold, HoldOutcome, claim_of_deleting_name, claim_of_new_name, new_name};
 pub(crate) use watch::{Link, ProcessWatch};
 
+/// How [`Host::make_private`] found its file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MakePrivateOutcome {
+    /// The file was not the user's alone, and now is.
+    Changed,
+    /// The file was the user's alone already, and was not written to.
+    Unchanged,
+}
+
 #[cfg(not(any(unix, windows)))]
 use other::OtherHost as Current;
 #[cfg(test)]
@@ -157,7 +166,10 @@ pub(crate) trait Host: Send + Sync {
     /// Restricts the existing file `path` the way [`write_private`](Host::write_private) restricts a new one: the
     /// current user alone can read it, whatever it had before (mode `0600`; on Windows a protected DACL granting only
     /// the user, which replaces an inherited one). The contents are not touched. `NotFound` if there is no file.
-    fn make_private(&self, path: &Path) -> std::io::Result<()>;
+    ///
+    /// A file that is restricted already is not written to: the check opens it for reading its permissions only, so it
+    /// succeeds for a file the user cannot change the permissions of.
+    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome>;
 
     /// Whether any execute bit of `path` is set; always `false` on Windows.
     fn is_executable(&self, path: &Path) -> std::io::Result<bool>;

@@ -82,9 +82,11 @@ fn read_private_takes_keys_written_before_they_were_private_to_the_users_alone(#
         "the client key must have the inherited entries"
     );
 
-    let read = InstanceKeys::read_private(&TestHost, &dir).unwrap();
+    let mut warnings = Vec::new();
+    let read = InstanceKeys::read_private(&TestHost, &dir, &mut |text| warnings.push(text)).unwrap();
 
     assert_eq!(texts(&read), texts(&keys));
+    assert!(warnings.is_empty(), "{warnings:?}");
     for name in ["client", "host"] {
         assert_eq!(file_mode::mode(&dir.join(name)), cfg!(unix).then_some(0o600), "{name}");
         #[cfg(windows)]
@@ -94,8 +96,34 @@ fn read_private_takes_keys_written_before_they_were_private_to_the_users_alone(#
 
 #[skuld::test]
 fn read_private_of_a_missing_set_is_not_found(#[fixture(unicode_home)] home: &Path) {
-    let error = InstanceKeys::read_private(&TestHost, &home.join("keys")).unwrap_err();
+    let error = InstanceKeys::read_private(&TestHost, &home.join("keys"), &mut |_| {}).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotFound);
+}
+
+#[skuld::test]
+fn read_private_reads_and_warns_when_a_key_cannot_be_made_private(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("keys");
+    let keys = InstanceKeys::generate().unwrap();
+    keys.write(&TestHost, &dir).unwrap();
+    let host = RecordingHost::new();
+    host.fail_make_private();
+
+    let mut warnings = Vec::new();
+    let read = InstanceKeys::read_private(&host, &dir, &mut |text| warnings.push(text)).unwrap();
+
+    assert_eq!(texts(&read), texts(&keys));
+    for name in ["client", "host"] {
+        let path = dir.join(name).display().to_string();
+        let [warning] = warnings
+            .iter()
+            .filter(|w| w.contains(&path))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or_else(|w: Vec<_>| panic!("one warning names {path}, not {}: {warnings:?}", w.len()));
+        assert!(warning.contains("OpenSSH"), "{warning}");
+        assert!(warning.contains("the test made this make_private fail"), "{warning}");
+    }
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
 }
 
 #[skuld::test]
