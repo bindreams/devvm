@@ -62,7 +62,7 @@ impl Host for TestHost {
         host::current().system_dirs()
     }
 
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         host::current().write_private(path, bytes)
     }
 
@@ -216,7 +216,7 @@ impl Host for NoAccelHost {
         TestHost.system_dirs()
     }
 
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         TestHost.write_private(path, bytes)
     }
 
@@ -509,7 +509,7 @@ impl Host for RecordingHost {
         TestHost.system_dirs()
     }
 
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         let index = {
             let mut writes = self.private_writes.lock().unwrap();
             writes.push(path.to_owned());
@@ -722,7 +722,7 @@ impl Host for NoGuestReset {
         host::current().system_dirs()
     }
 
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         host::current().write_private(path, bytes)
     }
 

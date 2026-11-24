@@ -24,7 +24,7 @@ use crate::backend::{
 use crate::contain::Lifetime;
 use crate::error::last_lines;
 use crate::guest::{BaseBuilder, BuildCtx, GuestOs};
-use crate::host::{Host, is_absent};
+use crate::host::Host;
 use crate::instance::record::InstanceId;
 use crate::iso::{HeldIso, InstallIso, read_install_iso};
 use crate::media::{SeedFile, read_files, write_cidata_image};
@@ -485,23 +485,18 @@ impl<'a> Build<'a> {
         };
         self.report_winpe_log_sizes();
         let Some((read, read_at)) = &self.license else {
-            return Err(with_log_tail(
-                Error::new(
-                    ErrorKind::Unavailable,
-                    "the guest finished without a DEVVM-LICENSE line, so when the base expires is not known",
-                ),
-                "the serial log",
-                &log,
-            ));
+            return Err(Error::new(
+                ErrorKind::Unavailable,
+                "the guest finished without a DEVVM-LICENSE line, so when the base expires is not known",
+            )
+            .with_log_tail("the serial log", &log));
         };
         // The serial log may say more than the read does, whatever the kind of the error.
         let expiry = expiry_from(read, evaluation, *read_at).map_err(|error| {
             let kind = error.kind();
-            with_log_tail(
-                error.with_context(kind, "the Windows base's license read"),
-                "the serial log",
-                &log,
-            )
+            error
+                .with_context(kind, "the Windows base's license read")
+                .with_log_tail("the serial log", &log)
         })?;
         self.task.finish();
         Ok(expiry)
@@ -557,7 +552,7 @@ impl<'a> Build<'a> {
     /// `error` of a launch whose serial log is `log`, with the end of that log and, while no marker has been written,
     /// what WinPE left on the answer disk.
     fn fail(&self, error: Error, log: &Path) -> Error {
-        self.with_winpe_logs(with_log_tail(error, "the serial log", log))
+        self.with_winpe_logs(error.with_log_tail("the serial log", log))
     }
 
     /// The spec of launch `number`: the install media only in the first.
@@ -707,16 +702,6 @@ fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
     match outcome {
         Err(error) => Err(error.after_cleanup("a VM process that may still run", killed)),
         Ok(value) => killed.map(|()| value),
-    }
-}
-
-/// `error`, with the last lines of the log `what` at `path`: the build's directory, and the log with it, is gone when
-/// the error is read. A log that is missing or empty adds nothing, and one that cannot be read says so.
-fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
-    match std::fs::read(path) {
-        Ok(bytes) => error.with_tail(what, &String::from_utf8_lossy(&bytes)),
-        Err(e) if is_absent(&e) => error,
-        Err(e) => error.with_tail(what, &format!("(cannot be read: {e})")),
     }
 }
 

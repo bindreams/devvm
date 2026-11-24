@@ -1,14 +1,13 @@
 //! Layer builds: [`Engine::build`] turns a recipe into a chain of cached layers.
 
 use std::cell::Cell;
-use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::Engine;
 use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
-use crate::error::TAIL_LINES;
+use crate::error::LastLines;
 use crate::exit::ExitStatus;
 use crate::guest::{BuildCtx, GuestOs};
 use crate::iso::{IsoMemo, IsoRoot, key_iso};
@@ -486,20 +485,16 @@ const STEP_OUTPUT: &str = "the step's output";
 
 /// The last lines a step's command printed on either stream, for the error of a step that fails.
 #[derive(Default)]
-struct Tail(Mutex<VecDeque<String>>);
+struct Tail(Mutex<LastLines>);
 
 impl Tail {
     fn push(&self, line: &str) {
         let mut lines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if lines.len() == TAIL_LINES {
-            lines.pop_front();
-        }
-        lines.push_back(strip_ansi(line).into_owned());
+        lines.push(strip_ansi(line).into_owned());
     }
 
     fn text(&self) -> String {
-        let lines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        lines.iter().map(String::as_str).collect::<Vec<_>>().join("\n")
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).text()
     }
 }
 

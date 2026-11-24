@@ -141,7 +141,7 @@ impl InstanceKeys {
             for (name, text, private) in files {
                 let path = temp.path().join(name);
                 let written = if private {
-                    host.write_private(&path, text.as_bytes())
+                    host.write_private(&path, text.as_bytes()).map(drop)
                 } else {
                     write_public(&path, text)
                 };
