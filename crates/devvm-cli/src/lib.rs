@@ -137,7 +137,7 @@ fn dispatch(deps: &Deps, command: Cmd, verbose: bool) -> Result<ExitStatus> {
         Cmd::Cp { src, dst } => run::cp(&engine()?, &src, &dst),
         Cmd::Start { name } => run::start(&engine()?, &name),
         Cmd::Stop { name } => run::stop(&engine()?, &name),
-        // Builds its own engine, one that does not fail on config.yaml.
+        // Own engine: doctor must still run when config.yaml fails to load.
         Cmd::Doctor => doctor::doctor(deps.transport.clone(), progress.clone()),
     }
 }

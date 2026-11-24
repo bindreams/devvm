@@ -38,8 +38,8 @@ pub(crate) struct QemuParts {
 
 /// The QEMU backend and the Linux and Windows guests over one `LazyInstall` and one `QemuStorage`, which the guest's builder reaches
 /// through `Storage::import_base`. Nothing is resolved, downloaded or created here: only a launch, a disk, a layer
-/// commit or a base import resolve the install, so `ls`, `rm` and `stop` work offline. Only those uses,
-/// the QEMU check and the engine's check that the file loads read `config.yaml`, through `install.config()`. On a
+/// commit or a base import resolve the install, so `ls`, `rm` and `stop` work offline. Only those uses, the QEMU
+/// check and the engine's config-load check read `config.yaml` (through `install.config()`). On a
 /// host with no manifest entry the parts still build, and the first use that needs QEMU fails naming the triple.
 pub(crate) fn qemu_parts(
     dirs: &Dirs,

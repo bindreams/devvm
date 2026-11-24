@@ -7,7 +7,6 @@ use crate::test_support::fixtures::unicode_home;
 /// Modes do not bind root, so the test refuses to run as root.
 #[skuld::test]
 fn an_emulator_without_read_permission_leaves_the_brief_and_full_lines_agreeing(#[fixture(unicode_home)] home: &Path) {
-    // SAFETY: `geteuid` reads a process attribute.
     assert_ne!(
         unsafe { libc::geteuid() },
         0,

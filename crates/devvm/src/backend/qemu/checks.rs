@@ -20,8 +20,8 @@ mod checks_windows_tests;
 
 /// Whether QEMU can be had: the line that `doctor` prints and `availability` reports. It passes when the manifest has a
 /// build for this target, which a launch downloads if it is not cached, or when the configured `qemu.path` is accepted
-/// by the check a launch applies (`configured`). Nothing is downloaded. Only
-/// [`Detail::Full`] hashes the configured QEMU, which reads the whole executable.
+/// by the check a launch applies (`configured`). Only [`Detail::Full`] hashes the configured QEMU, which reads the
+/// whole executable.
 pub(super) fn qemu_check(install: &LazyInstall, detail: Detail) -> Check {
     Check {
         name: "qemu".to_owned(),
@@ -37,13 +37,13 @@ fn qemu_outcome(install: &LazyInstall, detail: Detail) -> Result<String> {
             entry.qemu_version, entry.sha256
         ));
     };
-    // Not cached: a directory removed since the last call fails this one.
+    // Validated on every call, never cached.
     let qemu = configured(dir, Arch::host())?;
     match detail {
         Detail::Brief => Ok(format!("QEMU in {}", qemu.bin.display())),
         Detail::Full => {
             let system = ArchFiles::of(Arch::host()).system;
-            // Informational: whether the line passes is `configured`'s answer alone.
+            // Informational.
             let hash = match hash_file(&qemu.tool(&system)) {
                 Ok(bytes) => Sha256::from_bytes(bytes).to_string(),
                 Err(e) => format!("unavailable ({})", e.message()),
