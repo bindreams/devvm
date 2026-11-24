@@ -352,7 +352,7 @@ fn source_of(home: &Path, bytes: &[u8]) -> PathBuf {
 }
 
 /// A copy of `source` into `dir`, where the warnings are collected in `warnings`.
-fn copy_of(dir: &Path, source: &Path, warnings: &mut Vec<String>) -> std::io::Result<PathBuf> {
+pub(super) fn copy_of(dir: &Path, source: &Path, warnings: &mut Vec<String>) -> std::io::Result<PathBuf> {
     keep_copy(dir, &FixedClock(noon()), source, &mut |warning| {
         warnings.push(warning.to_owned())
     })

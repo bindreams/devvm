@@ -21,6 +21,10 @@ mod tail;
 #[path = "log_tests.rs"]
 mod log_tests;
 
+#[cfg(all(test, unix))]
+#[path = "log_unix_tests.rs"]
+mod log_unix_tests;
+
 /// A log older than this is removed when a new one is made, unless its run is alive.
 const KEEP: Duration = Duration::from_secs(14 * 24 * 3600);
 
