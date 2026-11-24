@@ -666,9 +666,9 @@ fn vm_qemu_spawned_through_the_backend_has_no_console_and_no_window(
     let found = os::children_of(pid);
     assert!(
         found.children.is_empty(),
-        "QEMU has a console (a child process): {:#?}; left out, created before QEMU: {:#?}",
-        found.children,
-        found.older_than_parent
+        "QEMU has a console (a child process):\n{}\nleft out, created before QEMU:\n{}",
+        found.children.join("\n"),
+        found.older_than_parent.join("\n")
     );
     assert_eq!(os::windows_of(pid), 0, "QEMU has a window");
     machine.kill().unwrap();
