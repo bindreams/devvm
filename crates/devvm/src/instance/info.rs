@@ -57,7 +57,7 @@ struct Line<'a> {
     owner: &'a str,
 }
 
-/// The time as a record would write it, or `out-of-range`.
+/// Infallible `time_text` for display.
 fn time_shown(time: SystemTime) -> String {
     time_text(time).unwrap_or_else(|_| "out-of-range".to_owned())
 }

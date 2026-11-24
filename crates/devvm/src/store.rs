@@ -21,7 +21,7 @@ pub(crate) fn time_text(time: SystemTime) -> Result<String> {
 }
 
 /// The instant an RFC 3339 timestamp names. The error names the text, whether it is no timestamp or one this platform's
-/// `SystemTime` cannot hold. Which instants `SystemTime` refuses depends on the toolchain's std, so no test pins one.
+/// `SystemTime` cannot hold.
 pub(crate) fn time_parse(text: &str) -> std::result::Result<SystemTime, String> {
     text.parse::<jiff::Timestamp>()
         .and_then(SystemTime::try_from)
