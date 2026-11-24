@@ -1,6 +1,6 @@
 use std::error::Error as _;
 
-use crate::error::{Error, ErrorKind};
+use crate::error::{self, Error, ErrorKind};
 
 #[skuld::test]
 fn kind_strings_are_the_wire_names() {
@@ -124,4 +124,43 @@ fn with_tail_of_empty_text_adds_nothing_and_keeps_the_source() {
     assert_eq!(error.message(), "cannot: cause");
     let error = error.with_tail("a log", "x");
     assert!(error.source().is_some(), "the source stays");
+}
+
+/// An error with a message of its own and a source.
+#[derive(Debug)]
+struct Layer(&'static str, Option<Box<dyn std::error::Error + 'static>>);
+
+impl std::fmt::Display for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Layer {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.1.as_deref()
+    }
+}
+
+#[skuld::test]
+fn the_text_of_an_error_is_followed_by_each_source_in_turn() {
+    let dns = Layer("dns error: no such host", None);
+    let connect = Layer("client error (Connect)", Some(Box::new(dns)));
+    let top = Layer("error sending request for url (https://h/x)", Some(Box::new(connect)));
+    assert_eq!(
+        error::text_with_sources(&top),
+        "error sending request for url (https://h/x): client error (Connect): dns error: no such host"
+    );
+}
+
+#[skuld::test]
+fn a_source_the_text_already_says_is_not_repeated() {
+    let inner = Layer("connection refused", None);
+    let top = Layer("cannot connect: connection refused", Some(Box::new(inner)));
+    assert_eq!(error::text_with_sources(&top), "cannot connect: connection refused");
+}
+
+#[skuld::test]
+fn an_error_without_a_source_is_its_text() {
+    assert_eq!(error::text_with_sources(&Layer("plain", None)), "plain");
 }

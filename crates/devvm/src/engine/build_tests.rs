@@ -191,6 +191,27 @@ fn iso_root(
 }
 
 #[skuld::test]
+fn a_disk_image_root_is_keyed_by_the_algorithm_its_pin_names() {
+    use crate::recipe::hash::RootContent;
+    use crate::recipe::{PerArch, Pin, Source};
+    use crate::{ContentHash, Sha256, Sha512};
+
+    let content = |hash: ContentHash| {
+        let source = Source::DiskImage(PerArch::any(Pin {
+            url: "https://h/a.img".to_owned(),
+            hash,
+        }));
+        root_of(&source, Arch::host(), &|_, _, _| unreachable!("no ISO here"))
+            .unwrap()
+            .0
+            .content()
+    };
+    let (short, long) = (Sha256::from_bytes([1; 32]), Sha512::from_bytes([2; 64]));
+    assert_eq!(content(short.into()), RootContent::Pinned(short.into()));
+    assert_eq!(content(long.into()), RootContent::Pinned(long.into()));
+}
+
+#[skuld::test]
 fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home)] home: &Path) {
     use crate::iso::IsoMemo;
     use crate::recipe::hash::root_key;

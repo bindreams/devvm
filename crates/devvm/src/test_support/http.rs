@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 /// How the server treats one request (the n-th is answered with the n-th behavior; later ones are `Normal`).
 pub enum Behavior {
     Normal,
+    /// Reads the request head and closes the connection without answering.
+    CloseWithoutAnswer,
     /// Sends `after` body bytes, then closes the connection short of the declared length.
     AbortAfter(usize),
     /// Sends `after` body bytes, tells the test (`paused`), then waits for `release` before sending the rest.
@@ -78,6 +80,11 @@ fn serve(stream: TcpStream, data: &[u8], etag: &str, state: &State) -> std::io::
     });
     let behavior = state.behaviors.lock().unwrap().pop_front().unwrap_or(Behavior::Normal);
 
+    let mut out = stream;
+    if matches!(behavior, Behavior::CloseWithoutAnswer) {
+        return out.shutdown(Shutdown::Both);
+    }
+
     let total = data.len();
     let from = range
         .as_deref()
@@ -86,7 +93,6 @@ fn serve(stream: TcpStream, data: &[u8], etag: &str, state: &State) -> std::io::
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|_| if_range.as_deref().is_none_or(|validator| validator == etag));
 
-    let mut out = stream;
     let (status, extra, body): (&str, String, &[u8]) = match from {
         Some(from) if from >= total => (
             "416 Range Not Satisfiable",
@@ -109,7 +115,7 @@ fn serve(stream: TcpStream, data: &[u8], etag: &str, state: &State) -> std::io::
 
     let gate = match &behavior {
         Behavior::AbortAfter(after) | Behavior::PauseAfter { after, .. } => Some(*after),
-        Behavior::Normal => None,
+        Behavior::Normal | Behavior::CloseWithoutAnswer => None,
     };
     let mut sent = 0;
     while sent < body.len() {
@@ -124,7 +130,7 @@ fn serve(stream: TcpStream, data: &[u8], etag: &str, state: &State) -> std::io::
                     // A dropped sender (the test is over) releases the gate too.
                     let _ = release.recv();
                 }
-                Behavior::Normal => {}
+                Behavior::Normal | Behavior::CloseWithoutAnswer => {}
             }
         }
         let limit = gate.filter(|gate| *gate > sent).unwrap_or(body.len());

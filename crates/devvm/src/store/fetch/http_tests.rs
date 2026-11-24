@@ -1,14 +1,57 @@
 use std::time::Duration;
 
 use super::ContentRange;
-use super::http::{parse_content_range, read_head, stall_message};
+use super::fetch_tests::Cause;
+use super::http::{comes_from_below, connect_timed_out, parse_content_range, read_head, stall_message};
 
 #[skuld::test]
-fn stall_error_text_names_url_and_seconds() {
-    assert_eq!(
-        stall_message("https://h/disk.img", Duration::from_secs(60)),
-        "no data from https://h/disk.img for 60s"
-    );
+fn stall_error_text_names_seconds() {
+    assert_eq!(stall_message(Duration::from_secs(60)), "no data for 60s");
+}
+
+/// `bottom` beneath two layers of error, as `reqwest` and `hyper` stack theirs.
+fn under_layers(bottom: impl std::error::Error + Send + Sync + 'static) -> Cause {
+    Cause("outer", Some(Box::new(Cause("inner", Some(Box::new(bottom))))))
+}
+
+/// The error `tokio::time::timeout` returns when its time is up.
+fn elapsed() -> tokio::time::error::Elapsed {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async { tokio::time::timeout(Duration::ZERO, std::future::pending::<()>()).await })
+        .unwrap_err()
+}
+
+// No test drives a real connect failure through `HttpTransport::get`: there is no portable way to make one without a
+// port nobody owns. The classifiers below are tested on constructed errors.
+
+#[skuld::test]
+fn an_io_error_beneath_the_request_error_comes_from_below_whatever_its_kind() {
+    use std::io::{Error, ErrorKind};
+
+    for io in [
+        Error::from(ErrorKind::TimedOut),
+        Error::from(ErrorKind::ConnectionRefused),
+        Error::from_raw_os_error(1),
+        Error::new(ErrorKind::TimedOut, "connection timed out"),
+    ] {
+        let text = io.to_string();
+        assert!(comes_from_below(&under_layers(io)), "{text}");
+    }
+}
+
+#[skuld::test]
+fn a_timeout_devvm_set_does_not_come_from_below() {
+    use std::io::{Error, ErrorKind};
+
+    // `hyper-util`'s connect timeout: an `io::Error` of kind `TimedOut` holding tokio's `Elapsed`.
+    let connect = Error::new(ErrorKind::TimedOut, elapsed());
+    assert!(!comes_from_below(&under_layers(connect)));
+    // `reqwest`'s own marker, and any other layer with no `io::Error` in it.
+    assert!(!comes_from_below(&under_layers(std::fmt::Error)));
+    assert!(!comes_from_below(&std::fmt::Error));
 }
 
 #[skuld::test]
@@ -46,6 +89,25 @@ fn content_range_headers_parse() {
     }
 }
 
+#[skuld::test]
+fn only_the_connect_phase_timeout_is_a_connect_timeout() {
+    use std::io::{Error, ErrorKind};
+
+    // `hyper-util` gives each address a share of the connect bound, so this expiry is not the whole stall.
+    let connect = Error::new(ErrorKind::TimedOut, elapsed());
+    assert!(connect_timed_out(&under_layers(connect)));
+    for other in [
+        Error::from(ErrorKind::TimedOut),
+        Error::from_raw_os_error(1),
+        Error::new(ErrorKind::TimedOut, "connection timed out"),
+    ] {
+        let text = other.to_string();
+        assert!(!connect_timed_out(&under_layers(other)), "{text}");
+    }
+    // `reqwest`'s own marker has no `io::Error`: it is the response head or a body read, where the bound is the stall.
+    assert!(!connect_timed_out(&under_layers(std::fmt::Error)));
+}
+
 // Over real HTTP ======================================================================================================
 
 use std::io::{BufRead, BufReader};
@@ -73,7 +135,7 @@ fn data(len: usize) -> Vec<u8> {
 fn artifact_for(server: &TestServer, data: &[u8]) -> Artifact {
     Artifact {
         url: server.url("/files/disk.img"),
-        sha256: Sha256::from_bytes(Sha2::digest(data).into()),
+        hash: Sha256::from_bytes(Sha2::digest(data).into()).into(),
     }
 }
 
@@ -82,7 +144,7 @@ fn artifact_for(server: &TestServer, data: &[u8]) -> Artifact {
 pub fn fetch_artifact(args: &[String]) {
     let artifact = Artifact {
         url: args[1].clone(),
-        sha256: args[2].parse().unwrap(),
+        hash: args[2].parse::<Sha256>().unwrap().into(),
     };
     let transport = Arc::new(HttpTransport::new().unwrap());
     let fetcher = Fetcher::new(args[0].clone().into(), transport, stderr_progress());
@@ -100,7 +162,7 @@ impl Child2 {
     fn start(downloads: &Path, artifact: &Artifact) -> Child2 {
         let mut child = helper::command(
             "fetch-artifact",
-            &[downloads.to_str().unwrap(), &artifact.url, &artifact.sha256.to_string()],
+            &[downloads.to_str().unwrap(), &artifact.url, &artifact.hash.to_string()],
         )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -156,7 +218,7 @@ fn http_transport_resumes_with_range_and_if_range(#[fixture(unicode_home)] home:
 
     let error = fetcher.fetch(&artifact).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download, "{error}");
-    let part = downloads.join(format!("{}.part", artifact.sha256));
+    let part = fetcher.part_path(&artifact);
     let kept = std::fs::metadata(&part).unwrap().len();
     assert!(kept > 0 && kept <= 81_920, "{kept}");
 
@@ -218,15 +280,15 @@ fn ctrl_c_mid_download_resumes(#[fixture(unicode_home)] home: &Path) {
     a.child.kill().unwrap();
     a.child.wait().unwrap();
 
-    let part = downloads.join(format!("{}.part", artifact.sha256));
-    let kept = std::fs::metadata(&part).unwrap().len();
-    assert!(kept >= (3 * MIB) as u64, "{kept}");
-
     let fetcher = Fetcher::new(
         downloads.clone(),
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
     );
+    let part = fetcher.part_path(&artifact);
+    let kept = std::fs::metadata(&part).unwrap().len();
+    assert!(kept >= (3 * MIB) as u64, "{kept}");
+
     // The dead downloader's lock died with it: this fetch does not wait.
     let path = fetcher.fetch(&artifact).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), body);
@@ -258,13 +320,9 @@ fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(unicode_
     paused_rx.recv().unwrap();
     drop(release_tx);
     assert_eq!(error.kind(), ErrorKind::Download, "{error}");
-    assert!(
-        error
-            .message()
-            .contains(&format!("no data from {} for 1s", artifact.url)),
-        "{error}"
-    );
-    let part = downloads.join(format!("{}.part", artifact.sha256));
+    assert!(error.message().contains("no data for 1s"), "{error}");
+    assert_eq!(error.message().matches(&artifact.url).count(), 1, "{error}");
+    let part = fetcher.part_path(&artifact);
     assert!(std::fs::metadata(part).unwrap().len() > 0);
 }
 
@@ -328,4 +386,45 @@ fn malformed_length_and_range_headers_are_named_in_warnings() {
     let head = read_head(&headers(&[("content-length", "10"), ("content-range", "bytes 0-9/10")]));
     assert_eq!(head.content_length, Some(10));
     assert!(head.warnings.is_empty());
+}
+
+#[skuld::test]
+fn a_response_head_stall_is_reported_as_a_stall_naming_the_url_once() {
+    use super::Transport;
+
+    // Listening and never accepting: the connection completes in the backlog and no response ever comes.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/disk.img", listener.local_addr().unwrap().port());
+    let error = HttpTransport::with_stall(Duration::from_secs(1))
+        .unwrap()
+        .get(&url, None)
+        .err()
+        .expect("nothing answers");
+    assert_eq!(error.message(), format!("cannot fetch {url}: no data for 1s"));
+    assert_eq!(error.message().matches(&url).count(), 1, "{error}");
+}
+
+#[skuld::test]
+fn a_connection_closed_without_an_answer_says_why_in_the_message() {
+    use std::error::Error as _;
+
+    use super::Transport;
+
+    let server = TestServer::start(Vec::new(), ETAG);
+    server.script(vec![Behavior::CloseWithoutAnswer]);
+    let url = server.url("/files/disk.img");
+    let error = HttpTransport::new()
+        .unwrap()
+        .get(&url, None)
+        .err()
+        .expect("the server closes the connection");
+    let mut cause = error.source().expect("the request error is the source");
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    assert!(
+        error.message().starts_with(&format!("cannot fetch {url}: ")) && error.message().contains(&cause.to_string()),
+        "{error}"
+    );
+    assert_eq!(error.message().matches(&url).count(), 1, "{error}");
 }
