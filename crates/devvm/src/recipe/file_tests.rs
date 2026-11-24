@@ -2,15 +2,19 @@ use std::path::Path;
 
 use crate::recipe::{CopyFrom, PerArch, Pin, ProductKey, Recipe, Setting, Shell, Source, Step, UacMode};
 use crate::test_support::fixtures::unicode_home;
-use crate::{Arch, ErrorKind, RunAs};
+use crate::{Arch, ErrorKind, RunAs, Sha256, Sha512};
 
 const SHA_A: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 const SHA_B: &str = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
+const SHA512_A: &str = concat!(
+    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+);
 
 fn pin(url: &str, sha: &str) -> Pin {
     Pin {
         url: url.to_owned(),
-        sha256: sha.parse().unwrap(),
+        hash: sha.parse::<Sha256>().unwrap().into(),
     }
 }
 
@@ -71,6 +75,108 @@ fn each_from_variant_parses() {
         panic!()
     };
     assert!(per_arch.get(Arch::Amd64).is_none() && per_arch.get(Arch::Arm64).is_some());
+}
+
+#[skuld::test]
+fn a_disk_image_pin_takes_sha512_instead_of_sha256() {
+    let pin512 = |url: &str| Pin {
+        url: url.to_owned(),
+        hash: SHA512_A.parse::<Sha512>().unwrap().into(),
+    };
+    let one = format!("from: {{ url: 'https://h/a.img', sha512: {SHA512_A} }}");
+    assert_eq!(
+        parse(&one).source,
+        Source::DiskImage(PerArch::any(pin512("https://h/a.img")))
+    );
+
+    let mixed = format!(
+        "from:
+  amd64: {{ url: 'https://h/a-amd64.img', sha512: {SHA512_A} }}
+  arm64: {{ url: 'https://h/a-arm64.img', sha256: {SHA_B} }}
+"
+    );
+    let Source::DiskImage(per_arch) = parse(&mixed).source else {
+        panic!()
+    };
+    assert_eq!(per_arch.get(Arch::Amd64), Some(&pin512("https://h/a-amd64.img")));
+    assert_eq!(per_arch.get(Arch::Arm64), Some(&pin("https://h/a-arm64.img", SHA_B)));
+}
+
+#[skuld::test]
+fn a_disk_image_pin_names_exactly_one_of_sha256_and_sha512() {
+    let cases = [
+        format!("from: {{ url: 'https://h/a', sha256: {SHA_A}, sha512: {SHA512_A} }}"),
+        "from: { url: 'https://h/a' }".to_owned(),
+        format!(
+            "from:
+  amd64: {{ url: 'https://h/a', sha256: {SHA_A}, sha512: {SHA512_A} }}
+"
+        ),
+        "from:
+  arm64: { url: 'https://h/a' }
+"
+        .to_owned(),
+    ];
+    for text in cases {
+        let error = parse_err(&text);
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{text}: {error}");
+        assert!(
+            error.message().contains("exactly one of `sha256` or `sha512`"),
+            "{text}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_digest_key_written_without_a_value_is_an_error_naming_it() {
+    let cases = [
+        (
+            "sha256",
+            format!("from: {{ url: 'https://h/a', sha256: , sha512: {SHA512_A} }}"),
+        ),
+        (
+            "sha512",
+            format!("from: {{ url: 'https://h/a', sha256: {SHA_A}, sha512: }}"),
+        ),
+        ("sha256", "from: { url: 'https://h/a', sha256: }".to_owned()),
+        ("sha512", "from: { url: 'https://h/a', sha512: null }".to_owned()),
+        (
+            "sha256",
+            format!("from:\n  amd64: {{ url: 'https://h/a', sha256: , sha512: {SHA512_A} }}\n"),
+        ),
+    ];
+    for (key, text) in cases {
+        let error = parse_err(&text);
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{text}: {error}");
+        assert!(error.message().contains(&format!("`{key}`")), "{text}: {error}");
+    }
+}
+
+#[skuld::test]
+fn a_digest_of_the_wrong_algorithm_is_an_error_naming_the_key_and_the_length() {
+    let cases = [
+        (
+            format!("from: {{ url: 'https://h/a', sha512: {SHA_A} }}"),
+            "`sha512`",
+            "128 hex digits",
+        ),
+        (
+            format!("from: {{ url: 'https://h/a', sha256: {SHA512_A} }}"),
+            "`sha256`",
+            "64 hex digits",
+        ),
+        (
+            "from: { url: 'https://h/a', sha512: abc }".to_owned(),
+            "`sha512`",
+            "128 hex digits",
+        ),
+    ];
+    for (text, key, digits) in cases {
+        let error = parse_err(&text);
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{text}: {error}");
+        let message = error.to_string();
+        assert!(message.contains(key) && message.contains(digits), "{text}: {message}");
+    }
 }
 
 #[skuld::test]

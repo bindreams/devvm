@@ -56,7 +56,7 @@ impl ManifestEntry {
     pub(crate) fn artifact(&self) -> Artifact {
         Artifact {
             url: self.url.clone(),
-            sha256: self.sha256,
+            hash: self.sha256.into(),
         }
     }
 }

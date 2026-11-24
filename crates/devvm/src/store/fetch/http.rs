@@ -9,6 +9,7 @@ use reqwest::header::{
 };
 
 use super::{ContentRange, Response, Resume, Transport};
+use crate::error::text_with_sources;
 use crate::lazy::Lazy;
 use crate::{Error, ErrorKind, Result};
 
@@ -35,7 +36,11 @@ impl HttpTransport {
             .user_agent(concat!("devvm/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| {
-                Error::new(ErrorKind::Internal, format!("cannot build the HTTP client: {e}")).with_source(e)
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("cannot build the HTTP client: {}", text_with_sources(&e)),
+                )
+                .with_source(e)
             })?;
         Ok(HttpTransport { client, stall })
     }
@@ -63,10 +68,14 @@ impl Transport for LazyHttp {
     }
 }
 
-/// The text of a stall: what was awaited and for how long.
-pub(super) fn stall_message(url: &str, stall: Duration) -> String {
-    format!("no data from {url} for {}s", stall.as_secs())
+/// The text of a stall, for a message that already names the URL.
+pub(super) fn stall_message(stall: Duration) -> String {
+    format!("no data for {}s", stall.as_secs())
 }
+
+/// The text of a connect that timed out. It names no duration: `hyper-util` gives each address of the host a share of
+/// the connect bound, so the wait can be shorter than the stall.
+const CONNECT_TIMEOUT_MESSAGE: &str = "the connection timed out";
 
 /// Parses `bytes 100-199/1000`, `bytes 100-199/*` and `bytes */1000`.
 pub(super) fn parse_content_range(value: &str) -> Option<ContentRange> {
@@ -89,24 +98,54 @@ pub(super) fn parse_content_range(value: &str) -> Option<ContentRange> {
 
 struct Body {
     inner: reqwest::blocking::Response,
-    url: String,
     stall: Duration,
 }
 
-/// Whether a body read failed for lack of data. `reqwest`'s blocking body wraps its timeout in an `io::Error` of kind
-/// `Other`, so the kind alone does not say.
-fn is_stall(e: &std::io::Error) -> bool {
-    e.kind() == std::io::ErrorKind::TimedOut
-        || e.get_ref()
-            .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
-            .is_some_and(reqwest::Error::is_timeout)
+/// Whether `e` is the expiry of the bound `with_stall` sets, and not a timeout the operating system reported.
+/// `reqwest::Error::is_timeout` is true for both.
+fn is_stall(e: &reqwest::Error) -> bool {
+    e.is_timeout() && !comes_from_below(e)
+}
+
+/// Whether the connection attempt timed out on a bound devvm set, which is not the whole stall.
+pub(super) fn connect_timed_out(e: &(dyn std::error::Error + 'static)) -> bool {
+    first_io_error(e).is_some_and(holds_elapsed)
+}
+
+/// Whether an `io::Error` the operating system or the network stack made is in the chain of `e`. The timeouts devvm
+/// sets are `reqwest`'s own marker error and, for the connect, an `io::Error` of kind `TimedOut` that holds tokio's
+/// `Elapsed`; every other `io::Error` is from below.
+pub(super) fn comes_from_below(e: &(dyn std::error::Error + 'static)) -> bool {
+    first_io_error(e).is_some_and(|io| !holds_elapsed(io))
+}
+
+fn first_io_error<'a>(e: &'a (dyn std::error::Error + 'static)) -> Option<&'a std::io::Error> {
+    let mut next = Some(e);
+    while let Some(layer) = next {
+        if let Some(io) = layer.downcast_ref::<std::io::Error>() {
+            return Some(io);
+        }
+        next = layer.source();
+    }
+    None
+}
+
+/// The shape of `hyper-util`'s connect timeout, as of 0.1.21 (`client/legacy/connect/http.rs`, `connect`): an
+/// `io::Error` of kind `TimedOut` holding tokio's `Elapsed`. Re-check it when `hyper-util` is bumped.
+fn holds_elapsed(io: &std::io::Error) -> bool {
+    io.get_ref()
+        .is_some_and(|inner| inner.is::<tokio::time::error::Elapsed>())
 }
 
 impl Read for Body {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read(buf).map_err(|e| {
-            if is_stall(&e) {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, stall_message(&self.url, self.stall))
+            let stalled = e
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
+                .is_some_and(is_stall);
+            if stalled {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, stall_message(self.stall))
             } else {
                 e
             }
@@ -186,10 +225,13 @@ impl Transport for HttpTransport {
             }
         }
         let response = request.send().map_err(|e| {
-            let why = if e.is_timeout() {
-                stall_message(url, self.stall)
+            let e = e.without_url();
+            let why = if connect_timed_out(&e) {
+                CONNECT_TIMEOUT_MESSAGE.to_owned()
+            } else if is_stall(&e) {
+                stall_message(self.stall)
             } else {
-                e.to_string()
+                text_with_sources(&e)
             };
             Error::new(ErrorKind::Download, format!("cannot fetch {url}: {why}")).with_source(e)
         })?;
@@ -199,7 +241,6 @@ impl Transport for HttpTransport {
         let body: Box<dyn Read + Send> = if status.is_success() && status != StatusCode::NO_CONTENT {
             Box::new(Body {
                 inner: response,
-                url: url.to_owned(),
                 stall: self.stall,
             })
         } else {

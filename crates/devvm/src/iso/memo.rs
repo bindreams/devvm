@@ -404,7 +404,7 @@ fn hash_held(held: &HeldIso, size: u64, progress: &dyn Progress) -> Result<Sha25
     let name = iso.file_name().unwrap_or(iso.as_os_str()).to_string_lossy();
     let task = progress.task(format!("hashing {name}"), Total::Bytes(size));
     progress.debug(&format!("hashing {}", iso.display()));
-    let hasher = hash_reader(file, iso, &mut |done| task.set(done))?;
+    let hasher: Sha2 = hash_reader(file, iso, &mut |done| task.set(done))?;
     task.finish();
     Ok(Sha256::from_bytes(hasher.finalize().into()))
 }

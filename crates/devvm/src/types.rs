@@ -108,58 +108,117 @@ impl Command {
     }
 }
 
-/// A SHA-256 digest. Parses 64 hex digits of either case; displays lowercase.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Sha256([u8; 32]);
+/// Defines a digest type: `$len` bytes, parsed from `$len * 2` hex digits of either case and displayed in lowercase.
+macro_rules! digest_type {
+    ($(#[$doc:meta])* $name:ident, $parse_error:ident, $len:literal, $message:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct $name([u8; $len]);
 
-/// The text is not 64 hex digits.
-#[derive(Debug, thiserror::Error)]
-#[error("not a sha256 (expected 64 hex digits): `{0}`")]
-pub struct ParseSha256Error(String);
+        /// The text is not the right number of hex digits.
+        #[derive(Debug, thiserror::Error)]
+        #[error($message)]
+        pub struct $parse_error(String);
 
-impl Sha256 {
-    pub fn from_bytes(bytes: [u8; 32]) -> Sha256 {
-        Sha256(bytes)
-    }
+        impl $name {
+            pub fn from_bytes(bytes: [u8; $len]) -> $name {
+                $name(bytes)
+            }
 
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
+            pub fn as_bytes(&self) -> &[u8; $len] {
+                &self.0
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = $parse_error;
+
+            fn from_str(text: &str) -> Result<$name, $parse_error> {
+                let mut bytes = [0u8; $len];
+                match hex::decode_to_slice(text, &mut bytes) {
+                    Ok(()) => Ok($name(bytes)),
+                    Err(_) => Err($parse_error(text.to_owned())),
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&hex::encode(self.0))
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, concat!(stringify!($name), "({})"), self)
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.collect_str(self)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<$name, D::Error> {
+                let text = String::deserialize(deserializer)?;
+                text.parse().map_err(serde::de::Error::custom)
+            }
+        }
+    };
 }
 
-impl FromStr for Sha256 {
-    type Err = ParseSha256Error;
+digest_type!(
+    /// A SHA-256 digest. Parses 64 hex digits of either case; displays lowercase.
+    Sha256,
+    ParseSha256Error,
+    32,
+    "not a sha256 (expected 64 hex digits): `{0}`"
+);
 
-    fn from_str(text: &str) -> Result<Sha256, ParseSha256Error> {
-        let mut bytes = [0u8; 32];
-        match hex::decode_to_slice(text, &mut bytes) {
-            Ok(()) => Ok(Sha256(bytes)),
-            Err(_) => Err(ParseSha256Error(text.to_owned())),
+digest_type!(
+    /// A SHA-512 digest. Parses 128 hex digits of either case; displays lowercase.
+    Sha512,
+    ParseSha512Error,
+    64,
+    "not a sha512 (expected 128 hex digits): `{0}`"
+);
+
+/// The digest a download is pinned by: one algorithm and its value. Displays as the hex digits alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ContentHash {
+    Sha256(Sha256),
+    Sha512(Sha512),
+}
+
+impl ContentHash {
+    /// The algorithm as a recipe names it.
+    pub fn algorithm(&self) -> &'static str {
+        match self {
+            ContentHash::Sha256(_) => "sha256",
+            ContentHash::Sha512(_) => "sha512",
         }
     }
 }
 
-impl fmt::Display for Sha256 {
+impl From<Sha256> for ContentHash {
+    fn from(hash: Sha256) -> ContentHash {
+        ContentHash::Sha256(hash)
+    }
+}
+
+impl From<Sha512> for ContentHash {
+    fn from(hash: Sha512) -> ContentHash {
+        ContentHash::Sha512(hash)
+    }
+}
+
+impl fmt::Display for ContentHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&hex::encode(self.0))
-    }
-}
-
-impl fmt::Debug for Sha256 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Sha256({self})")
-    }
-}
-
-impl Serialize for Sha256 {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for Sha256 {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Sha256, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        text.parse().map_err(serde::de::Error::custom)
+        match self {
+            ContentHash::Sha256(hash) => hash.fmt(f),
+            ContentHash::Sha512(hash) => hash.fmt(f),
+        }
     }
 }

@@ -53,7 +53,7 @@ impl BaseBuilder for LinuxBuilder {
         })?;
         let downloaded = self.fetcher.fetch(&Artifact {
             url: pin.url.clone(),
-            sha256: pin.sha256,
+            hash: pin.hash,
         })?;
         self.storage.import_base(&downloaded, ctx.arch, staging)?;
         // The store owns the key, the generation and the creation time; it reads only the expiry from what a base

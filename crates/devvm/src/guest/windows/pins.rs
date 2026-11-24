@@ -3,6 +3,7 @@
 //! The virtio-win ISO is fetched by the host. The three zips are downloaded by the first-logon script in the guest,
 //! which checks each sha256 before it extracts anything.
 
+use crate::Sha256;
 use crate::store::fetch::Artifact;
 
 #[cfg(test)]
@@ -23,10 +24,11 @@ impl Pin {
     pub(super) fn artifact(&self) -> Artifact {
         Artifact {
             url: self.url.to_owned(),
-            sha256: self
+            hash: self
                 .sha256
-                .parse()
-                .expect("every pin is 64 hex digits (checked by a test)"),
+                .parse::<Sha256>()
+                .expect("every pin is 64 hex digits (checked by a test)")
+                .into(),
         }
     }
 }

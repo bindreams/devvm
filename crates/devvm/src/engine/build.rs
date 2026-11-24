@@ -227,7 +227,7 @@ fn root_of(source: &Source, arch: Arch, iso_root: &KeyIso) -> Result<(BuildRoot,
                 )
             })?;
             Ok((
-                BuildRoot::Pinned(RootContent::Sha256(pin.sha256)),
+                BuildRoot::Pinned(RootContent::Pinned(pin.hash)),
                 format!("disk image {}", pin.url),
             ))
         }

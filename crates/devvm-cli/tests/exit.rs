@@ -70,7 +70,7 @@ fn panic_on_workers(args: &[String], parties: usize) -> i32 {
                 let fetcher = Fetcher::new(downloads.clone(), deps.transport.clone(), Arc::new(NullProgress));
                 let artifact = Artifact {
                     url: format!("https://example.test/{i}"),
-                    sha256: Sha256::from_bytes([i as u8; 32]),
+                    hash: Sha256::from_bytes([i as u8; 32]).into(),
                 };
                 std::thread::spawn(move || fetcher.fetch(&artifact))
             })
