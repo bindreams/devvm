@@ -15,6 +15,8 @@ use crate::progress::{Event, Level, Outcome, Progress, TaskId, Total, escape_con
 use crate::random;
 use crate::store::layers::Clock;
 
+mod tail;
+
 #[cfg(test)]
 #[path = "log_tests.rs"]
 mod log_tests;
