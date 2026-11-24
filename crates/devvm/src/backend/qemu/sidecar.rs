@@ -358,7 +358,7 @@ impl Source {
                 format!("{} is gone right after it was published", published.display()),
             )
         })?;
-        self.prune_superseded(&qemu, &published);
+        self.prune_superseded(&qemu, &self.surplus(&qemu, &published).installs);
         Ok(install)
     }
 
@@ -432,17 +432,17 @@ impl Source {
         surplus
     }
 
-    /// Removes every published install but `keep`, with the extraction lock held.
+    /// Removes the superseded `installs` ([`Source::surplus`]), with the extraction lock held.
     ///
     /// An install is first renamed to an `.extract-` name, which nothing resolves. The rename is the test for "in use":
     /// it is refused with one of the host's codes ([`Host::rename_refused_by_open_file`]) while a file is held open
     /// under the directory or the directory is open itself (a working directory), and the install stays as it was,
-    /// silently. Any other failure is a warning. Once renamed, the install
-    /// is gone as far as every devvm is concerned, and what the delete cannot remove is swept by the next sweep. A
-    /// failure on one install does not stop the others.
-    fn prune_superseded(&self, qemu: &Path, keep: &Path) {
+    /// silently. An install that is no longer there (the list was made before the lock was taken) is passed over; any
+    /// other failure is a warning. Once renamed, the install is gone as far as every devvm is concerned, and what the
+    /// delete cannot remove is swept by the next sweep. A failure on one install does not stop the others.
+    fn prune_superseded(&self, qemu: &Path, installs: &[PathBuf]) {
         let in_use = self.host.rename_refused_by_open_file();
-        for path in self.surplus(qemu, keep).installs {
+        for path in installs {
             let removing = match quarantine_path(qemu, ".extract") {
                 Ok(removing) => removing,
                 Err(e) => {
@@ -450,8 +450,10 @@ impl Source {
                     return;
                 }
             };
-            match std::fs::rename(&path, &removing) {
+            match std::fs::rename(path, &removing) {
                 Ok(()) => {}
+                // Listed before the lock was taken: another devvm removed it since.
+                Err(e) if crate::host::is_absent(&e) => continue,
                 Err(e) if e.raw_os_error().is_some_and(|code| in_use.contains(&code)) => continue,
                 Err(e) => {
                     self.progress
@@ -481,7 +483,7 @@ impl Source {
             if lock.try_lock(Mode::Exclusive)? {
                 // Every `.extract-` directory is created and renamed from under this lock, so none is in progress.
                 self.sweep_extractions(&qemu)?;
-                self.prune_superseded(&qemu, published);
+                self.prune_superseded(&qemu, &surplus.installs);
             }
             Ok(())
         })();

@@ -567,6 +567,21 @@ fn a_resolve_that_finds_the_pinned_install_removes_the_installs_of_older_builds(
 }
 
 #[skuld::test]
+fn pruning_removes_the_installs_it_is_given_and_passes_over_one_that_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let given = old_install(&qemu, "10.0.0-0123456789ab");
+    let untouched = old_install(&qemu, "10.0.1-0123456789ab");
+    let gone = qemu.join("10.0.2-0123456789ab");
+
+    world.source.prune_superseded(&qemu, &[gone, given.clone()]);
+
+    assert!(!given.exists(), "{:?}", entries(&qemu));
+    assert!(untouched.join("bin").is_dir(), "only what it is given is removed");
+    assert!(world.progress.warnings().is_empty(), "{:?}", world.progress.warnings());
+}
+
+#[skuld::test]
 fn only_a_directory_named_like_an_install_is_removed(#[fixture(unicode_home)] home: &Path) {
     let world = world(home, zip_of(&files()));
     let qemu = world.dirs.qemu();
