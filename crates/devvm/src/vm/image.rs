@@ -15,6 +15,7 @@ use crate::guest::GuestOs;
 use crate::host::Unavailable;
 use crate::instance::dir::OpShared;
 use crate::instance::name::InstanceName;
+use crate::instance::record::InstanceRecord;
 use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
 use crate::store::fetch::LazyHttp;
@@ -338,12 +339,27 @@ impl Vm {
         let op = dir.op_shared()?;
         let record = read_record(&instance.engine, dir, &op)?;
         let guest = instance.engine.guests().os(record.guest)?;
-        let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        let session = match slot.as_ref().filter(|session| session.is_alive()) {
-            Some(session) => session.clone(),
-            None => slot.insert(ops::reach(&instance.engine, dir, &record, &op)?.1).clone(),
+        let cached = self
+            .session
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|session| session.is_alive())
+            .cloned();
+        let session = match cached {
+            Some(session) => session,
+            None => self.connect_and_cache(&record, &op)?,
         };
         Ok((guest, session, op))
+    }
+
+    /// A new connection to the guest `record` names, which becomes the cached session: the one stored last stays. The
+    /// lock of the cache is not held while connecting.
+    fn connect_and_cache(&self, record: &InstanceRecord, op: &OpShared) -> Result<SshSession> {
+        let instance = self.instance();
+        let fresh = ops::reach(&instance.engine, instance.dir(), record, op)?.1;
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = Some(fresh.clone());
+        Ok(fresh)
     }
 
     /// Runs `attempt` on `session`. A cached session may have ended unseen, so an `attempt` that fails before anything
@@ -366,18 +382,14 @@ impl Vm {
         }
     }
 
-    /// A new connection to the guest, which becomes the cached session: the one stored last stays. A failure leaves no
-    /// cached session. Each operation that failed makes its own, as a server may limit the sessions of one connection;
-    /// the lock is not held while connecting.
+    /// A new connection to the guest, which becomes the cached session. A failure leaves no cached session. Each
+    /// operation that failed makes its own, as a server may limit the sessions of one connection.
     fn reconnect(&self, op: &OpShared) -> Result<SshSession> {
         // Cleared before anything can fail, so a stale session is not left cached.
         *self.session.lock().unwrap_or_else(PoisonError::into_inner) = None;
         let instance = self.instance();
-        let dir = instance.dir();
-        let record = read_record(&instance.engine, dir, op)?;
-        let fresh = ops::reach(&instance.engine, dir, &record, op)?.1;
-        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = Some(fresh.clone());
-        Ok(fresh)
+        let record = read_record(&instance.engine, instance.dir(), op)?;
+        self.connect_and_cache(&record, op)
     }
 
     /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives. As [`Instance::run_to`].
