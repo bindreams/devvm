@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use super::sidecar_tests::{entries, files, old_install, visible, world, world_pinning_another_build, zip_of};
-use crate::contain::contain_tests::Sleeper;
+use super::sidecar_tests::{entries, files, visible, world, world_pinning_another_build, zip_of};
+use crate::contain::Lifetime;
 use crate::host;
+use crate::test_support::fake_vm;
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::helper;
 
 /// The error a rename fails with while a file inside the directory is open without delete sharing, measured on Windows
 /// 11 (build 26100) on 2026-11-24: `ERROR_ACCESS_DENIED`, which the host names as the sign of an install in use.
@@ -78,31 +78,37 @@ fn the_install_that_existing_returns_is_held(#[fixture(unicode_home)] home: &Pat
     assert_eq!(visible(&first.dirs.qemu()).len(), 2);
 }
 
-/// A running executable in place of the held file: a copy of this test binary, installed as `qemu-system-x86_64` and
-/// running as the `sleeper` helper.
+/// A process that holds a duplicate of the install's hold keeps the install whole until it exits, whatever became of
+/// the value that was resolved. The fake VM, started frozen as QEMU is, stands in for QEMU; the process is spawned, so
+/// this runs in CI only.
 #[skuld::test]
-fn an_older_install_whose_executable_is_running_is_kept_whole_until_it_exits(#[fixture(unicode_home)] home: &Path) {
-    let world = world(home, zip_of(&files()));
-    let qemu = world.dirs.qemu();
-    let running = old_install(&qemu, "10.0.0-0123456789ab");
-    let exe = running
-        .join("bin")
-        .join(format!("qemu-system-x86_64{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(helper::exe(), &exe).unwrap();
-    let child = std::process::Command::new(&exe)
-        .env(helper::HELPER_VAR, "sleeper")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let sleeper = Sleeper { child };
+fn an_install_whose_hold_was_given_to_a_process_stays_whole_until_that_process_exits(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let first = world(home, zip_of(&files()));
+    let second = world_pinning_another_build(home);
+    let qemu = first.dirs.qemu();
+    let mut vm = fake_vm::frozen(home, Lifetime::DiesWithOwner);
+    let installed = {
+        let install = first.source.resolve().unwrap();
+        host::current()
+            .share_open_file_with(install.held.as_ref().expect("a downloaded install is held"), vm.id())
+            .unwrap();
+        install.bin.parent().unwrap().to_path_buf()
+    };
 
-    world.source.resolve().unwrap();
+    // Nothing in this process holds the install now; the process it was given to does.
+    second.source.resolve().unwrap();
 
     for (file, _) in files() {
-        assert!(running.join(&file).is_file(), "{file} is gone from the install in use");
+        assert!(
+            installed.join(&file).is_file(),
+            "{file} is gone from the install in use"
+        );
     }
-    sleeper.finish();
+    assert_eq!(visible(&qemu).len(), 2, "{:?}", entries(&qemu));
+    vm.kill().unwrap();
 
-    world.source.resolve().unwrap();
-    assert!(!running.exists(), "{:?}", entries(&qemu));
+    second.source.resolve().unwrap();
+    assert!(!installed.exists(), "{:?}", entries(&qemu));
 }

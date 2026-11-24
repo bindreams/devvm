@@ -244,6 +244,13 @@ impl<M: FileModes> Host for M {
         File::open(path)
     }
 
+    fn share_open_file_with(&self, _file: &File, _process: ProcessId) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "only Windows gives an open file to a process before it runs",
+        ))
+    }
+
     fn rename_refused_by_open_file(&self) -> Option<i32> {
         None
     }

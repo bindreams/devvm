@@ -314,6 +314,10 @@ impl Host for WindowsHost {
         hold::open_held_read(path)
     }
 
+    fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()> {
+        hold::share_open_file(file, process)
+    }
+
     fn rename_refused_by_open_file(&self) -> Option<i32> {
         Some(ERROR_ACCESS_DENIED as i32)
     }

@@ -110,6 +110,13 @@ impl QemuBackend {
         // QEMU keeps the hold, unused, until it exits or is killed.
         hold.share_with(vm.id())
             .map_err(|e| Error::io(ErrorKind::Io, "cannot give the launch's hold to QEMU", e))?;
+        // Likewise the hold on the install: it lasts as long as this QEMU runs, whether or not this devvm does. A
+        // configured QEMU is the user's own and holds nothing.
+        if let Some(held) = &install.held {
+            self.host
+                .share_open_file_with(held, vm.id())
+                .map_err(|e| Error::io(ErrorKind::Io, "cannot give the QEMU install's hold to QEMU", e))?;
+        }
         drop(hold);
         let process = vm.record()?;
         let watch = self.host.watch_process(vm.id())?;

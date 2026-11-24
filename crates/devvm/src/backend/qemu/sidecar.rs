@@ -11,10 +11,13 @@
 //!
 //! An install is in use while a process holds a file inside it open: the [`QemuInstall`] a resolve returns keeps one
 //! open ([`HELD_TOOL`], read-only, without delete sharing) for as long as the value lives, and Windows refuses to rename
-//! a directory with such a file in it. Removal renames, so an install in use is never touched, whether its QEMU is
-//! running or only resolved and not yet launched. No record of which install a machine runs is kept, and none is
-//! needed. A host where an open file does not stop the rename ([`Host::rename_refused_by_open_file`]) has no such
-//! test, and removes nothing there: a manifest entry for another OS needs its own in-use test first.
+//! a directory with such a file in it. A launch gives QEMU a duplicate of that handle
+//! ([`Host::share_open_file_with`]), which QEMU keeps until it exits, so the install stays held for as long as any
+//! process that resolved it lives and any QEMU started from it runs, whether or not the devvm that started it has
+//! exited. Removal renames, so an install in use is never touched. No record of which install a machine runs is kept,
+//! and none is needed. A configured `qemu.path` is the user's own: nothing is held or given for it. A host where an
+//! open file does not stop the rename ([`Host::rename_refused_by_open_file`]) has no such test, and removes nothing
+//! there: a manifest entry for another OS needs its own in-use test first.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;

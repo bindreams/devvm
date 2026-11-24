@@ -251,6 +251,13 @@ pub(crate) trait Host: Send + Sync {
     /// read-only handle: QEMU opens the ISO read-only with the default sharing, which this mode allows.
     fn open_held_read(&self, path: &Path) -> std::io::Result<File>;
 
+    /// Puts a duplicate of the open file `file` in `process`, which keeps `file` as [`Host::open_held_read`] holds it
+    /// until `process` exits, after this process has closed its own copy: [`Hold::share_with`] for a file that is held
+    /// without being a [`Hold`]. The duplicate is not inheritable, so no other process ever gets it. The caller holds
+    /// `process` open, so its identity cannot be taken by another. A host that cannot start a process frozen (all but
+    /// Windows) fails `Unsupported`.
+    fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()>;
+
     /// The OS error code that renaming a directory fails with while a file inside it is open without delete sharing
     /// ([`Host::open_held_read`] opens one), or `None` on a host where an open file does not stop the rename. Where
     /// there is none, no directory can be shown to be in use, and devvm removes none on that ground. Windows: 5
