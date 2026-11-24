@@ -158,7 +158,7 @@ impl QemuMachine {
         if let Err(wait) = self.vm.wait() {
             return wait;
         }
-        self.exited(error.message())
+        self.exited(&error.body())
     }
 
     /// What QEMU printed in this launch, for an error: its text, or a note in brackets when it printed nothing or the
@@ -171,17 +171,13 @@ impl QemuMachine {
         }
     }
 
-    /// The error for a QEMU process that exited while devvm was using it, quoting what it printed in this launch.
+    /// The error for a QEMU process that exited while devvm was using it, with what it printed in this launch as its
+    /// tail, whole.
     fn exited(&self, what: &str) -> Error {
-        Error::new(
-            ErrorKind::ConnectionLost,
-            format!(
-                "QEMU exited: {what}; its output ({}):\n{}",
-                self.log.display(),
-                self.output()
-            ),
-        )
-        .with_serial_log(&self.record.serial_log)
+        let mut error = Error::new(ErrorKind::ConnectionLost, format!("QEMU exited: {what}"))
+            .with_serial_log(&self.record.serial_log);
+        error.append_tail(&format!("QEMU's output ({})", self.log.display()), &self.output());
+        error
     }
 
     /// `Unavailable` for a machine launched with `-no-reboot`, which a reset would end.

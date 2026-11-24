@@ -602,12 +602,9 @@ fn a_lost_connection_sets_the_serial_log_and_does_not_print_it_in_its_text() {
     assert_eq!(error.kind(), ErrorKind::ConnectionLost);
     assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
     assert_eq!(error.body(), "running a command: the VM process exited");
-    assert!(
-        error.message().ends_with(
-            "
-serial log: /x/serial.log"
-        ),
-        "{error}"
+    assert_eq!(
+        error.message(),
+        "running a command: the VM process exited (serial log: /x/serial.log)"
     );
 }
 
@@ -927,7 +924,7 @@ fn a_closed_host_output_closes_the_channel_and_returns_host_output_closed(#[fixt
     let mut stderr = Vec::new();
     let end = session.exec("write-forever", &mut RefusesWrites, &mut stderr).unwrap();
     match end {
-        ExecEnd::HostOutputClosed { error, status } => {
+        ExecEnd::HostOutputClosed { error, status, .. } => {
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, None, "the command had not ended");
         }
@@ -961,7 +958,7 @@ fn a_write_that_fails_after_the_exit_status_arrived_keeps_the_status(#[fixture(u
         .exec("status-then-marker", &mut RefusesWrites, &mut stderr)
         .unwrap();
     match end {
-        ExecEnd::HostOutputClosed { error, status } => {
+        ExecEnd::HostOutputClosed { error, status, .. } => {
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, Some(ExitStatus::Code(7)), "the command's result is not lost");
         }
@@ -1146,7 +1143,7 @@ fn a_flush_that_fails_at_the_end_is_a_closed_host_output_that_keeps_the_status(#
     let mut stderr = Vec::new();
     let end = session.exec("echo hi", &mut FailsToFlush, &mut stderr).unwrap();
     match end {
-        ExecEnd::HostOutputClosed { error, status } => {
+        ExecEnd::HostOutputClosed { error, status, .. } => {
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, Some(ExitStatus::Code(0)), "the command's result is not lost");
         }

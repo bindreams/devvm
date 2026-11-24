@@ -420,7 +420,7 @@ fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
 }
 
 #[skuld::test]
-fn text_added_to_an_error_by_the_builder_keeps_its_source_and_serial_log() {
+fn text_added_to_an_error_by_the_builder_follows_its_serial_log_and_keeps_its_source() {
     let failed = || {
         crate::Error::new(ErrorKind::Unavailable, "the VM process exited")
             .with_source(std::io::Error::other("the cause"))
@@ -429,31 +429,19 @@ fn text_added_to_an_error_by_the_builder_keeps_its_source_and_serial_log() {
 
     let quiet = super::with_qemu_output(failed(), "");
     assert_eq!(quiet.serial_log(), Some(Path::new("/x/serial.log")));
-    assert!(
-        quiet.message().ends_with(
-            "
-serial log: /x/serial.log"
-        ),
-        "{quiet}"
-    );
     assert!(std::error::Error::source(&quiet).is_some(), "the source stays");
     assert_eq!(
-        quiet.body(),
+        quiet.message(),
         format!(
-            "the VM process exited
-QEMU's output:
-{}",
+            "the VM process exited (serial log: /x/serial.log)\nQEMU's output:\n{}",
             crate::backend::PRINTED_NOTHING
         )
     );
 
     let loud = super::with_qemu_output(failed(), "qemu: out of memory");
-    assert!(
-        loud.message().ends_with(
-            "qemu: out of memory
-serial log: /x/serial.log"
-        ),
-        "{loud}"
+    assert_eq!(
+        loud.message(),
+        "the VM process exited (serial log: /x/serial.log)\nthe end of QEMU's output:\nqemu: out of memory"
     );
 }
 
@@ -866,6 +854,47 @@ fn an_end_with_no_exit_and_no_failure_is_an_internal_error_whatever_the_guest_wr
             );
         }
     }
+}
+
+#[skuld::test]
+fn host_failures_that_follow_a_headline_are_named_without_their_serial_log_and_the_first_log_stays() {
+    let status = Error::new(ErrorKind::Io, "cannot read the status").with_serial_log("/x/status.log");
+    let log = Error::new(ErrorKind::Io, "cannot read the log").with_serial_log("/x/log.log");
+    let mut end = End::stalled(stall(), Some(status));
+    end.log = Some(log);
+
+    let error = verdict(1, end, &wrote(Some("boom"), false)).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert_eq!(error.serial_log(), Some(Path::new("/x/status.log")), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
+    assert!(
+        error
+            .body()
+            .contains("; io: cannot read the status; io: cannot read the log"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn the_first_host_failure_that_is_the_headline_keeps_its_serial_log_and_names_the_second_without_its() {
+    let status = Error::new(ErrorKind::Io, "cannot read the status").with_serial_log("/x/status.log");
+    let log = Error::new(ErrorKind::Download, "cannot read the log").with_serial_log("/x/log.log");
+    let end = End {
+        exit: None,
+        status: Some(status),
+        log: Some(log),
+    };
+
+    let error = verdict(1, end, &Serial::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(error.serial_log(), Some(Path::new("/x/status.log")), "{error}");
+    assert_eq!(
+        error.message(),
+        "cannot read the status; download: cannot read the log (serial log: /x/status.log)",
+        "{error}"
+    );
 }
 
 // What the second read of the log does to the one that failed at the wait =============================================

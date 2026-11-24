@@ -216,11 +216,7 @@ fn a_manifest_entry_that_failed_is_told_whole_each_time(#[fixture(unicode_home)]
     let error = source.entry().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
-    assert_eq!(
-        error.message(),
-        "no build for this host
-serial log: serial.log"
-    );
+    assert_eq!(error.message(), "no build for this host (serial log: serial.log)");
     assert_eq!(error.serial_log(), Some(Path::new("serial.log")));
     assert_eq!(std::error::Error::source(&error).unwrap().to_string(), "the cause");
 }
