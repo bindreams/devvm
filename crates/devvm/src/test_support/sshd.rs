@@ -558,11 +558,17 @@ impl Handler for Connection {
         reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let refused = self
-            .state
-            .refuse_channels
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
-            .is_ok();
+        let refuse = &self.state.refuse_channels;
+        let mut left = refuse.load(Ordering::SeqCst);
+        let refused = loop {
+            if left == 0 {
+                break false;
+            }
+            match refuse.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break true,
+                Err(now) => left = now,
+            }
+        };
         if refused {
             // Dropping the reply refuses the channel.
             return Ok(());
