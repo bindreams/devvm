@@ -28,10 +28,10 @@ mod log_unix_tests;
 /// A log older than this is removed when a new one is made, unless its run is alive.
 const KEEP: Duration = Duration::from_secs(14 * 24 * 3600);
 
-/// The end of the name of a kept copy of a serial log; that of a run's log is [`RUN_LOG`].
+/// Ends the name of a kept copy of a serial log.
 const SERIAL_COPY: &str = ".serial.log";
 
-/// The end of the name of a run's log.
+/// Ends the name of a run's log.
 const RUN_LOG: &str = ".log";
 
 const ADVANCES: u128 = 20;
@@ -156,14 +156,10 @@ impl FileLog {
     }
 }
 
-/// Copies `source` to `devvm-<UTC time>-<pid>-<4 hex>.serial.log` in `dir`, which is made if it is not there, after
-/// removing the logs in it that are older than 14 days, except a run log whose process is running, as
-/// [`FileLog::create`] does. What goes wrong in that removal is told to `warn`. The copy is the user's alone and is streamed. A `source` that
-/// cannot be read makes no file, and a copy that fails half way is removed. Returns the copy's path.
-#[allow(
-    dead_code,
-    reason = "called by the error path of a failed VM, which is added after it"
-)]
+/// Copies `source` to a new `devvm-<UTC time>-<pid>-<4 hex>.serial.log` in `dir` (made if missing), pruning old logs
+/// first as [`FileLog::create`] does. Prune problems go to `warn`. The copy is the user's alone and streamed. An
+/// unreadable `source` makes no file; a copy that fails half way is removed. Returns the copy's path.
+#[allow(dead_code, reason = "no caller yet")]
 pub(crate) fn keep_copy(
     dir: &Path,
     clock: &dyn Clock,
@@ -202,8 +198,8 @@ pub(crate) fn keep_copy_with(
     Ok(path)
 }
 
-/// Makes `devvm-<UTC time>-<pid>-<4 hex><suffix>` in `dir`, the user's alone, holding `first`. The name is drawn
-/// again while another run has drawn it. A failure comes with the path it could not write.
+/// Makes a uniquely named file ending in `suffix` in `dir`, the user's alone, holding `first`; returns it open. The name
+/// is redrawn while another run holds it. A failure carries the path it could not write.
 fn create_named(
     dir: &Path,
     clock: &dyn Clock,
@@ -246,7 +242,7 @@ fn process_is_alive(pid: u32) -> bool {
     }
 }
 
-/// The pid in the name of the log `devvm-<time>-<pid>-<hex>.log`.
+/// The pid in the name of a log `devvm-<time>-<pid>-<hex>` plus its suffix.
 fn owner_of(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("devvm-")?.strip_suffix(RUN_LOG)?;
     rest.rsplit('-').nth(1)?.parse().ok()
@@ -283,8 +279,7 @@ fn prune(dir: &Path, now: SystemTime, alive: &dyn Fn(u32) -> bool) -> Vec<String
     warnings
 }
 
-/// Removes the log at `path`, named `name`, if its age (from `modified`) is more than [`KEEP`] by `now` and `alive` does
-/// not say its run is running; adds what goes wrong to `warnings`.
+/// Removes the log at `path` if it is older than [`KEEP`] and not a live run's; adds problems to `warnings`.
 fn prune_one(
     path: &Path,
     name: &str,

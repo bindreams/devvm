@@ -344,14 +344,12 @@ fn the_owner_is_the_pid_before_the_last_dash() {
 
 // Kept copies ---------------------------------------------------------------------------------------------------------
 
-/// A file of `bytes` in `home`, to be copied.
 fn source_of(home: &Path, bytes: &[u8]) -> PathBuf {
     let path = home.join("serial.log");
     std::fs::write(&path, bytes).unwrap();
     path
 }
 
-/// A copy of `source` into `dir`, where the warnings are collected in `warnings`.
 pub(super) fn copy_of(dir: &Path, source: &Path, warnings: &mut Vec<String>) -> std::io::Result<PathBuf> {
     keep_copy(dir, &FixedClock(noon()), source, &mut |warning| {
         warnings.push(warning.to_owned())
