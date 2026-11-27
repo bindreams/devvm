@@ -65,9 +65,7 @@ impl QemuBackend {
         if let Some(vm) = vm
             && let Err(kill) = vm.kill()
         {
-            return error.with_step_naming(&kill, |kill| {
-                format!("the frozen QEMU could not be killed either ({kill}) and is still running")
-            });
+            return unkilled(error, &kill);
         }
         // Only this launch's own files: nobody else draws its name while its claim file is there.
         remove_files(self.host, &endpoint.launch_files(), Some(claim), &mut |message| {
@@ -114,6 +112,13 @@ impl QemuBackend {
         let watch = self.host.watch_process(vm.id())?;
         Ok((MachineRecordParts { process, log, log_from }, watch))
     }
+}
+
+/// The error of a launch that failed (`error`) while its frozen QEMU could not be killed (`kill`).
+fn unkilled(error: Error, kill: &Error) -> Error {
+    error.with_step_naming(kill, |kill| {
+        format!("the frozen QEMU could not be killed either ({kill}) and is still running")
+    })
 }
 
 /// How long the file `log` is, 0 when it is not there. A link is followed: QEMU appends to the file it leads to.
