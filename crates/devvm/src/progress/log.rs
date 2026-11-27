@@ -16,6 +16,8 @@ use crate::random;
 use crate::store::layers::Clock;
 
 mod tail;
+#[cfg(test)]
+pub(crate) use tail::log_tail;
 
 #[cfg(test)]
 #[path = "log_tests.rs"]
