@@ -23,7 +23,7 @@ bytesize = "2.7.0"
 console = "0.16"
 sha2 = "0.11.1"
 getrandom = "0.4.3"
-jiff = "0.2.38"
+jiff = "1.0.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
 url = "2.5.8"
 percent-encoding = "2.3.2"
