@@ -338,11 +338,11 @@ impl Drop for Up {
                         }
                     }
                 }
-                // A failed write must not panic: a second panic aborts before `remove`, leaving the machine running.
+                // A failed write must not panic: a second panic aborts, leaving this and other machines running.
                 let _ = writeln!(std::io::stderr(), "{report}");
             }
             if let Err(e) = instance.remove() {
-                eprintln!("cannot remove instance {name}: {e}");
+                let _ = writeln!(std::io::stderr(), "cannot remove instance {name}: {e}");
             }
         }
     }
