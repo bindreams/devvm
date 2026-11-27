@@ -118,9 +118,8 @@ impl Error {
         self
     }
 
-    /// Only tests read the path: the message shows it.
-    #[cfg(test)]
-    pub(crate) fn serial_log(&self) -> Option<&Path> {
+    /// The serial log of the guest this error is about, if any.
+    pub fn serial_log(&self) -> Option<&Path> {
         self.serial_log.as_deref()
     }
 
