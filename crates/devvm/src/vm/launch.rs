@@ -15,6 +15,10 @@ use crate::instance::dir::{InstanceDir, OpExclusive};
 use crate::vm::{remove_leftovers, warn_for};
 use crate::{Error, ErrorKind, Result};
 
+#[cfg(test)]
+#[path = "launch_tests.rs"]
+mod launch_tests;
+
 /// A machine that runs and has answered: still contained, and reached through `session`.
 pub(crate) struct Started {
     pub machine: Box<dyn Machine>,

@@ -1,3 +1,4 @@
+use std::error::Error as _;
 use std::path::{Path, PathBuf};
 
 use crate::recipe::embedded;
@@ -177,6 +178,27 @@ fn missing_parent_file_names_both_files(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(error.kind(), ErrorKind::NotFound);
     assert!(error.message().contains("child.devvm.yaml"), "{error}");
     assert!(error.message().contains("gone.devvm.yaml"), "{error}");
+}
+
+#[skuld::test]
+fn a_parent_that_does_not_parse_is_its_own_failure_described_by_the_child(#[fixture(unicode_home)] home: &Path) {
+    let parent = write(home, "parent.devvm.yaml", "from: [unclosed\n");
+    let child = write(home, "child.devvm.yaml", "from: parent.devvm.yaml\n");
+    let alone = Recipe::from_file(&parent).unwrap_err();
+
+    let error = Recipe::from_file(&child).unwrap().flatten().unwrap_err();
+
+    assert_eq!(error.kind(), alone.kind());
+    assert_eq!(
+        error.message(),
+        format!(
+            "{} starts from {}: {}",
+            child.display(),
+            parent.display(),
+            alone.message()
+        )
+    );
+    assert!(error.source().is_some(), "the parse error stays the source: {error}");
 }
 
 #[skuld::test]
