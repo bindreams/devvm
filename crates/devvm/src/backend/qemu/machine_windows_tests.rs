@@ -268,12 +268,12 @@ fn shutdown_waits_for_the_exit_after_a_request_cannot_be_written_because_the_soc
 
 /// Shutdown of a machine whose QEMU stays alive, against a server that runs `script` once with the link's `Refusing`:
 /// an error of `kind`, with the leftovers of the live machine kept, and no wait for a process that nothing was asked
-/// to end.
+/// to end. Returns the error.
 fn shutdown_fails_while_qemu_lives(
     home: &Path,
     kind: ErrorKind,
     script: impl Fn(&mut Session, &Refusing) + Send + 'static,
-) {
+) -> Error {
     let world = world(home);
     let watch = Refusing::new(world.watch());
     let seen_by_script = watch.clone();
@@ -293,6 +293,30 @@ fn shutdown_fails_while_qemu_lives(
     drop(machine);
     server.join().unwrap();
     world.end_qemu();
+    error
+}
+
+#[skuld::test]
+fn a_vm_that_pauses_while_it_shuts_down_is_unavailable_and_names_its_serial_log_once(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let error = shutdown_fails_while_qemu_lives(home, ErrorKind::Unavailable, |session, _| {
+        answer_running(session);
+        session.answer(json!({}));
+        session.event("STOP", None);
+        session.answer(json!({ "status": "io-error", "running": false }));
+        // QEMU is alive: the connection stays up until the client drops it.
+        while session.command().is_some() {}
+    });
+
+    assert!(
+        error
+            .message()
+            .starts_with("the VM stopped (io-error) while it was shutting down"),
+        "{error}"
+    );
+    assert_eq!(error.serial_log(), Some(home.join("serial.log").as_path()), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
 }
 
 #[skuld::test]
