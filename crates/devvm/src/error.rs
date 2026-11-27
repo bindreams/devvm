@@ -222,15 +222,15 @@ impl Error {
 
     /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, after its message and serial log path.
     pub(crate) fn with_tail(mut self, what: &str, text: &str) -> Error {
-        self.append_tail(what, &last_lines(text));
+        self.append_tail(&format!("the end of {what}"), &last_lines(text));
         self
     }
 
-    /// `tail`, which `what` names, after the message and the serial log path, as it is: the caller has cut it to the
-    /// lines it wants. Nothing when it is empty.
-    pub(crate) fn append_tail(&mut self, what: &str, tail: &str) {
+    /// `tail` under the line `<label>:`, after the message and the serial log path, as it is: the caller has cut it to
+    /// the lines it wants and says in `label` which part of what it is. Nothing when it is empty.
+    pub(crate) fn append_tail(&mut self, label: &str, tail: &str) {
         if !tail.is_empty() {
-            self.push_tail(&format!("\nthe end of {what}:\n{tail}"));
+            self.push_tail(&format!("\n{label}:\n{tail}"));
         }
     }
 

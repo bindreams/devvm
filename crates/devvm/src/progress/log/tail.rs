@@ -17,10 +17,11 @@ impl Error {
     /// nothing; a file that cannot be read adds `(cannot be read: <error>)`. The file is streamed, and a line longer
     /// than [`TAIL_LINE_BYTES`] shows `...` and its end.
     pub(crate) fn with_log_tail(mut self, what: &str, path: &Path) -> Error {
+        let label = format!("the end of {what}");
         match tail_of_file(path) {
-            Ok(tail) => self.append_tail(what, &tail),
+            Ok(tail) => self.append_tail(&label, &tail),
             Err(e) if is_absent(&e) => {}
-            Err(e) => self.append_tail(what, &format!("(cannot be read: {e})")),
+            Err(e) => self.append_tail(&label, &format!("(cannot be read: {e})")),
         }
         self
     }

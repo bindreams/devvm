@@ -118,6 +118,13 @@ fn with_tail_ends_the_message_with_the_last_20_lines_of_the_text() {
 }
 
 #[skuld::test]
+fn append_tail_writes_the_label_it_is_given() {
+    let mut error = Error::new(ErrorKind::ConnectionLost, "QEMU exited: gone");
+    error.append_tail("QEMU's output (/x/qemu.log)", "boom");
+    assert_eq!(error.message(), "QEMU exited: gone\nQEMU's output (/x/qemu.log):\nboom");
+}
+
+#[skuld::test]
 fn with_tail_of_empty_text_adds_nothing_and_keeps_the_source() {
     let source = std::io::Error::other("cause");
     let error = Error::io(ErrorKind::Io, "cannot", source).with_tail("a log", "");
