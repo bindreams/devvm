@@ -16,7 +16,10 @@ const DAY: u64 = 24 * 3600;
 
 /// 2026-11-18T12:00:00Z.
 fn noon() -> SystemTime {
-    "2026-11-18T12:00:00Z".parse::<jiff::Timestamp>().unwrap().into()
+    "2026-11-18T12:00:00Z"
+        .parse::<jiff::Timestamp>()
+        .and_then(SystemTime::try_from)
+        .unwrap()
 }
 
 struct FixedClock(SystemTime);

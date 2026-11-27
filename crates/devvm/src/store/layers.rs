@@ -540,7 +540,7 @@ impl LayerStore {
 /// `YYYY-MM-DD` in UTC.
 pub(crate) fn date_text(time: SystemTime) -> String {
     match jiff::Timestamp::try_from(time) {
-        Ok(timestamp) => timestamp.to_zoned(jiff::tz::TimeZone::UTC).date().to_string(),
+        Ok(timestamp) => timestamp.to_zoned_datetime(jiff::tz::TimeZone::UTC).date().to_string(),
         Err(_) => "an unrepresentable date".to_owned(),
     }
 }
