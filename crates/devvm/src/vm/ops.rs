@@ -49,9 +49,9 @@ pub(super) fn run_to(
             };
             let error = Error::io(ErrorKind::Io, context, error);
             Err(match lost {
-                Some(lost) => error.with_step_naming(&lost, |lost| {
-                    format!("the command's output was lost as well ({lost})")
-                }),
+                Some(lost) => {
+                    error.with_step_naming(&lost, |lost| format!("the command's output was lost as well ({lost})"))
+                }
                 None => error,
             })
         }

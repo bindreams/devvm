@@ -288,7 +288,7 @@ fn with_appended_puts_the_text_at_the_end_after_the_serial_log_and_keeps_kind_an
     assert!(is_marked(&error));
 }
 
-// One error inside another ------------------------------------------------------------------------------------------
+// One error inside another --------------------------------------------------------------------------------------------
 
 /// An error with a source, a serial log and a tail, to be named inside another.
 fn inner() -> Error {
@@ -305,7 +305,10 @@ fn naming_puts_the_inner_sentence_with_its_kind_in_the_body_and_takes_the_rest_o
         named = inner.to_owned();
         format!("cannot start ({inner})")
     });
-    assert_eq!(named, "connection-lost: lost", "only the sentence, without path or tail");
+    assert_eq!(
+        named, "connection-lost: lost",
+        "only the sentence, without path or tail"
+    );
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
         error.message(),
@@ -335,7 +338,10 @@ fn with_step_naming_adds_the_inner_sentence_as_a_step_and_takes_its_serial_log_a
         "first; connection-lost: lost as well (serial log: /x/inner.log)\nthe end of the inner log:\ni\nj"
     );
     assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/inner.log")));
-    assert!(error.source().is_some_and(|source| source.is::<std::fmt::Error>()), "its own source stays");
+    assert!(
+        error.source().is_some_and(|source| source.is::<std::fmt::Error>()),
+        "its own source stays"
+    );
 }
 
 #[skuld::test]

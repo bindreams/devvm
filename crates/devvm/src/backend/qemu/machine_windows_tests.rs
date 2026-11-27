@@ -8,7 +8,6 @@ use serde_json::json;
 
 use super::QemuMachine;
 use crate::Arch;
-use crate::{Error, ErrorKind};
 use crate::backend::fake::{ask_to_crash, ask_to_exit};
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
 use crate::backend::{Machine, MachineRecord};
@@ -18,6 +17,7 @@ use crate::test_support::fake_vm;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::Sock;
 use crate::test_support::refusing::Refusing;
+use crate::{Error, ErrorKind};
 
 /// A fake VM, a control socket for it and the record that names both.
 struct World {
@@ -387,7 +387,10 @@ fn an_exited_machine_names_its_serial_log_before_the_output_it_quotes(#[fixture(
         "{error}"
     );
     assert!(error.message().ends_with("\nqemu: out of memory"), "{error}");
-    assert!(error.message().contains("\nQEMU's output ("), "the whole output, not its end: {error}");
+    assert!(
+        error.message().contains("\nQEMU's output ("),
+        "the whole output, not its end: {error}"
+    );
     assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     world.end_qemu();
 }

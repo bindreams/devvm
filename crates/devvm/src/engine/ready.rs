@@ -143,7 +143,9 @@ pub(crate) fn reconnect_after_reset(
     let mut last_failed_read: Option<Error> = None;
     loop {
         let session = connect(engine, target, &vm, bound).map_err(|e| match &last_failed_read {
-            Some(read) => e.with_step_naming(read, |read| format!("the last read of the boot id failed ({read}) as well")),
+            Some(read) => e.with_step_naming(read, |read| {
+                format!("the last read of the boot id failed ({read}) as well")
+            }),
             None => e,
         })?;
         last_failed_read = match read_boot_id(guest, &session) {

@@ -765,9 +765,9 @@ impl SshSession {
             ExecEnd::HostOutputClosed { error, lost, .. } => {
                 let error = Error::io(ErrorKind::Internal, "a memory sink refused output", error);
                 Err(match lost {
-                    Some(lost) => error.with_step_naming(&lost, |lost| {
-                        format!("the command's output was lost as well ({lost})")
-                    }),
+                    Some(lost) => {
+                        error.with_step_naming(&lost, |lost| format!("the command's output was lost as well ({lost})"))
+                    }
                     None => error,
                 })
             }

@@ -203,7 +203,8 @@ fn run_to_names_a_loss_before_the_closed_writer_and_takes_its_serial_log(#[fixtu
     let result = std::thread::scope(|scope| {
         // The status arrives, then output, then the VM exits under the command: a loss after the status. The final
         // flush then fails.
-        let run = scope.spawn(|| instance.run_to(&Command::new(["status-then-marker"]), &mut out, &mut std::io::sink()));
+        let run =
+            scope.spawn(|| instance.run_to(&Command::new(["status-then-marker"]), &mut out, &mut std::io::sink()));
         assert_eq!(heard.recv().unwrap(), b"marker\n");
         end.send(()).unwrap();
         run.join().unwrap()

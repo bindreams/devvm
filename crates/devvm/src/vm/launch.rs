@@ -220,6 +220,8 @@ fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine
 /// its source kept, with the kill named in its text.
 fn survivor(cause: Error, kill: Error, what_happens: &str) -> Error {
     cause.with_step_naming(&kill, |kill| {
-        format!("the machine that failed to start could not be killed either ({kill}) and may still run: {what_happens}")
+        format!(
+            "the machine that failed to start could not be killed either ({kill}) and may still run: {what_happens}"
+        )
     })
 }

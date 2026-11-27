@@ -575,9 +575,10 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
     let error = session.exec_collect("hold").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(
-        error
-            .message()
-            .ends_with(&format!("boot bound of 200ms (serial log: {})", rig.serial_log.display())),
+        error.message().ends_with(&format!(
+            "boot bound of 200ms (serial log: {})",
+            rig.serial_log.display()
+        )),
         "{error}"
     );
     assert!(error.message().contains("hold"), "{error}");
