@@ -13,7 +13,7 @@ use crate::guest::windows::pins::VIRTIO_WIN;
 use crate::guest::windows::templates;
 use crate::guest::{BaseBuilder, BuildCtx};
 use crate::iso::{IsoMemo, key_iso};
-use crate::media::read_files;
+use crate::media::{SeedFile, read_files};
 use crate::recipe::{ProductKey, Source};
 use crate::store::fetch::Fetcher;
 use crate::store::layers::layers_tests::{Env, env, key, request};
@@ -443,6 +443,54 @@ fn text_added_to_an_error_by_the_builder_follows_its_serial_log_and_keeps_its_so
         loud.message(),
         "the VM process exited (serial log: /x/serial.log)\nthe end of QEMU's output:\nqemu: out of memory"
     );
+}
+
+/// A launch's error before WinPE's logs are added: a source, a serial log and a tail.
+fn stalled_in_winpe() -> Error {
+    Error::new(ErrorKind::Unavailable, "launch 1 stalled")
+        .with_source(std::io::Error::other("the cause"))
+        .with_serial_log("/x/serial.log")
+        .with_tail("the serial log", "firmware line")
+}
+
+#[skuld::test]
+fn winpes_logs_follow_the_tail_keep_the_source_and_serial_log_and_a_later_step_lands_before_them() {
+    let files = vec![
+        SeedFile {
+            name: "logs/winpe.log".to_owned(),
+            bytes: b"a\r\nb\r\n".to_vec(),
+        },
+        SeedFile {
+            name: "logs/setupact.log".to_owned(),
+            bytes: Vec::new(),
+        },
+    ];
+
+    let error = super::with_winpe_files(stalled_in_winpe(), Ok(files)).with_step("cleaning up failed as well");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    let source = std::error::Error::source(&error).expect("the source stays");
+    assert_eq!(source.to_string(), "the cause");
+    assert_eq!(
+        error.message(),
+        "launch 1 stalled; cleaning up failed as well (serial log: /x/serial.log)\n\
+         the end of the serial log:\nfirmware line\n\
+         logs/winpe.log (6 bytes), last lines:\na\nb\n\
+         logs/setupact.log (0 bytes), last lines:\n(it is empty)"
+    );
+}
+
+#[skuld::test]
+fn an_answer_disk_with_none_of_winpes_logs_is_a_step_before_the_tail() {
+    let error = super::with_winpe_files(stalled_in_winpe(), Ok(Vec::new()));
+
+    assert_eq!(
+        error.message(),
+        "launch 1 stalled; the answer disk holds none of WinPE's logs (serial log: /x/serial.log)\n\
+         the end of the serial log:\nfirmware line"
+    );
+    assert!(std::error::Error::source(&error).is_some(), "the source stays");
 }
 
 // The clock of a bound ================================================================================================

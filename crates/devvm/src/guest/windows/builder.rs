@@ -675,28 +675,34 @@ impl<'a> Build<'a> {
         if self.watch.marker_seen() {
             return error;
         }
-        let logs = match self.winpe_logs() {
-            Ok(files) if files.is_empty() => "\nthe answer disk holds none of WinPE's logs".to_owned(),
-            Ok(files) => files
-                .iter()
-                .map(|file| {
-                    format!(
-                        "\n{} ({} bytes), last lines:\n{}",
-                        file.name,
-                        file.bytes.len(),
-                        last_lines(&String::from_utf8_lossy(&file.bytes))
-                    )
-                })
-                .collect(),
-            Err(read) => {
-                return error.with_step_naming(&read, |read| {
-                    format!("the logs on the answer disk cannot be read ({read})")
-                });
-            }
-        };
-        error.with_appended(&logs)
+        with_winpe_files(error, self.winpe_logs())
     }
 }
+
+/// `error` with `logs`, what was read of WinPE's logs on the answer disk: a tail for each log, or a step when there is
+/// none or the read failed.
+fn with_winpe_files(mut error: Error, logs: Result<Vec<SeedFile>>) -> Error {
+    match logs {
+        Ok(files) if files.is_empty() => error.with_step("the answer disk holds none of WinPE's logs"),
+        Ok(files) => {
+            for file in &files {
+                let lines = last_lines(&String::from_utf8_lossy(&file.bytes));
+                let lines = if lines.is_empty() { EMPTY_LOG } else { lines.as_str() };
+                error.append_tail(
+                    &format!("{} ({} bytes), last lines", file.name, file.bytes.len()),
+                    lines,
+                );
+            }
+            error
+        }
+        Err(read) => error.with_step_naming(&read, |read| {
+            format!("the logs on the answer disk cannot be read ({read})")
+        }),
+    }
+}
+
+/// What stands for the lines of a WinPE log that holds none.
+const EMPTY_LOG: &str = "(it is empty)";
 
 /// `outcome` of a launch whose VM process was then killed with `killed`. A failed outcome stays the headline and names
 /// a kill that failed after it: the tree kill may have left a descendant running. An outcome that went well is the
@@ -713,9 +719,10 @@ fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
 
 /// `error` of a launch whose VM process failed, with the last lines of what QEMU printed in it, or the note that it
 /// printed nothing.
-fn with_qemu_output(error: Error, output: &str) -> Error {
+fn with_qemu_output(mut error: Error, output: &str) -> Error {
     if output.trim().is_empty() {
-        return error.with_appended(&format!("\nQEMU's output:\n{PRINTED_NOTHING}"));
+        error.append_tail("QEMU's output", PRINTED_NOTHING);
+        return error;
     }
     error.with_tail("QEMU's output", output)
 }

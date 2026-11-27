@@ -123,13 +123,6 @@ impl Error {
         self.serial_log.as_deref()
     }
 
-    /// `text` at the end of the message, after the serial log path and the tail, as it is. Kind, source and serial log
-    /// stay.
-    pub(crate) fn with_appended(mut self, text: &str) -> Error {
-        self.push_tail(text);
-        self
-    }
-
     /// Attaches the underlying error, reachable through [`std::error::Error::source`].
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Error {
         self.source = Some(std::sync::Arc::new(source));

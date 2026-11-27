@@ -273,21 +273,6 @@ fn with_serial_log_replaces_an_earlier_path() {
     assert_eq!(error.serial_log(), Some(std::path::Path::new("/y/second.log")));
 }
 
-#[skuld::test]
-fn with_appended_puts_the_text_at_the_end_after_the_serial_log_and_keeps_kind_and_source() {
-    let error = Error::new(ErrorKind::Unavailable, "launch failed")
-        .with_source(Marker)
-        .with_serial_log("/x/serial.log")
-        .with_tail("the log", "a")
-        .with_appended("\nQEMU's output:\nnothing");
-    assert_eq!(error.kind(), ErrorKind::Unavailable);
-    assert_eq!(
-        error.message(),
-        "launch failed (serial log: /x/serial.log)\nthe end of the log:\na\nQEMU's output:\nnothing"
-    );
-    assert!(is_marked(&error));
-}
-
 // One error inside another --------------------------------------------------------------------------------------------
 
 /// An error with a source, a serial log and a tail, to be named inside another.
