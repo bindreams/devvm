@@ -45,7 +45,7 @@ fn stall_the_outgoing_queue(session: &SshSession, rig: &Rig) -> (russh::Channel<
 fn a_vm_exit_ends_an_exec_whose_close_has_no_room_in_the_session_queue(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let session = SshSession::connect(&rig.target(), NEVER, vm, None, &NullProgress).unwrap();
     let (events, mut host) = tokio::sync::mpsc::channel(1);
     let running = runtime::spawn(run_exec(

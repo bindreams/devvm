@@ -108,15 +108,18 @@ impl Keepalive {
 pub(crate) enum WatchEnd {
     /// The VM process is gone.
     Exited,
-    /// The watcher could not tell: the reason it gives. A wait that cannot know whether the VM lives must not go on
+    /// The watcher could not tell: the failure it gives. A wait that cannot know whether the VM lives must not go on
     /// as if it did.
-    Unwatched(String),
+    Unwatched(Error),
 }
 
 impl WatchEnd {
     /// The watcher thread died without a verdict (it panicked).
     fn lost() -> WatchEnd {
-        WatchEnd::Unwatched("the thread that watches the VM process ended without a result".to_owned())
+        WatchEnd::Unwatched(Error::new(
+            ErrorKind::Internal,
+            "the thread that watches the VM process ended without a result",
+        ))
     }
 }
 
@@ -129,12 +132,12 @@ pub(crate) struct VmExit {
 impl VmExit {
     /// Watches `process` from a thread that blocks in `VmProcess::wait`. The thread lives as long as the VM.
     pub(crate) fn watch(process: VmProcess) -> Result<VmExit> {
-        VmExit::when(move || process.wait().map_err(|e| e.message().to_owned()))
+        VmExit::when(move || process.wait())
     }
 
-    /// Fires when `wait`, which blocks until the VM is gone, returns. An `Err` is the reason the VM's end could not be
+    /// Fires when `wait`, which blocks until the VM is gone, returns. An `Err` is why the VM's end could not be
     /// observed; waits then end with it. Fails when the OS cannot start the thread.
-    pub(crate) fn when(wait: impl FnOnce() -> std::result::Result<(), String> + Send + 'static) -> Result<VmExit> {
+    pub(crate) fn when(wait: impl FnOnce() -> Result<()> + Send + 'static) -> Result<VmExit> {
         let (sender, receiver) = watch::channel(None);
         std::thread::Builder::new()
             .name("devvm-vm-exit".to_owned())
@@ -358,10 +361,11 @@ impl Context {
     fn vm_ended(&self, awaiting: &str, end: &WatchEnd) -> Error {
         match end {
             WatchEnd::Exited => self.lost(awaiting, "the VM process exited"),
-            WatchEnd::Unwatched(why) => self.lost(
-                awaiting,
-                &format!("it cannot be told whether the VM process is still running ({why})"),
-            ),
+            // The failed wait is why the wait ends, so this error takes its source.
+            WatchEnd::Unwatched(why) => Error::naming(ErrorKind::ConnectionLost, why, |why| {
+                format!("{awaiting}: it cannot be told whether the VM process is still running ({why})")
+            })
+            .with_serial_log(&self.serial_log),
         }
     }
 

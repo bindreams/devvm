@@ -27,7 +27,7 @@ use crate::test_support::host::TestHost;
 use crate::test_support::sshd::TestSshd;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::test_support::transport::RefusingTransport;
-use crate::{Arch, Dirs, ErrorKind, GuestKind, Image, Instance};
+use crate::{Arch, Dirs, Error, ErrorKind, GuestKind, Image, Instance};
 use cosca::identity::{ProcessId, ProcessIdRecord};
 
 /// A test engine over the fake host, backend and guests, with its own state under the test's home. Its machines are
@@ -271,7 +271,7 @@ fn ended_exit() -> VmExit {
 
 /// A watcher that ended without knowing whether its VM lives.
 fn unwatched_exit() -> VmExit {
-    let exit = VmExit::when(|| Err("the VM process cannot be waited on".to_owned())).unwrap();
+    let exit = VmExit::when(|| Err(Error::new(ErrorKind::Io, "the VM process cannot be waited on"))).unwrap();
     crate::access::runtime::wait(exit.gone());
     exit
 }

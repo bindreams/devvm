@@ -9,8 +9,8 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::access::keys::InstanceKeys;
 use crate::access::session::{
-    BootGate, ClientHandler, Connect, Context, Failure, Transport, Watch, connect_tcp, humanly, is_not_started,
-    not_started,
+    BootGate, ClientHandler, Connect, Context, Failure, Transport, Watch, WatchEnd, connect_tcp, humanly,
+    is_not_started, not_started,
 };
 use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit, runtime};
 use crate::contain::VmProcess;
@@ -201,7 +201,7 @@ fn all_256_byte_values_arrive_intact_on_both_streams(#[fixture(unicode_home)] ho
 fn a_vm_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let session = rig.connect_with(vm, None).unwrap();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
@@ -240,7 +240,7 @@ fn a_vm_watcher_that_cannot_wait_ends_the_wait_with_its_reason(#[fixture(unicode
     let (fire, wait) = mpsc::channel::<()>();
     let vm = VmExit::when(move || {
         let _ = wait.recv();
-        Err("the handle is gone".to_owned())
+        Err(Error::new(ErrorKind::Io, "the handle is gone"))
     })
     .unwrap();
     let session = rig.connect_with(vm, None).unwrap();
@@ -334,7 +334,7 @@ fn connect_retries_while_refused_and_stops_when_the_vm_exits(#[fixture(unicode_h
     target.addr = refused_addr();
     let (progress, messages) = ChannelProgress::new();
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let error = std::thread::scope(|scope| {
         let connecting = scope.spawn(|| {
             SshSession::connect(
@@ -601,6 +601,33 @@ fn a_lost_connection_sets_the_serial_log_and_does_not_print_it_in_its_text() {
     );
 }
 
+#[skuld::test]
+fn a_vm_that_cannot_be_watched_names_the_failed_wait_and_keeps_its_source() {
+    let ctx = Context {
+        addr: "127.0.0.1:22".parse().unwrap(),
+        user: "user".to_owned(),
+        serial_log: std::path::PathBuf::from("/x/serial.log"),
+        host_public: "HOST-PUBLIC".to_owned(),
+    };
+    let wait = Error::io(
+        ErrorKind::Io,
+        "cannot wait on the VM process",
+        std::io::Error::other("access denied"),
+    );
+
+    let error = ctx.vm_ended("running a command", &WatchEnd::Unwatched(wait));
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    assert_eq!(
+        error.message(),
+        "running a command: it cannot be told whether the VM process is still running \
+         (io: cannot wait on the VM process: access denied) (serial log: /x/serial.log)"
+    );
+    let source = std::error::Error::source(&error).expect("the wait's source");
+    assert_eq!(source.to_string(), "access denied");
+}
+
 /// A connect to `target`, with no VM to watch and no boot bound.
 fn connect_to(ka: Keepalive, target: SshTarget) -> Connect {
     Connect {
@@ -691,7 +718,7 @@ fn a_finished_boot_is_no_longer_ended_by_the_boot_bound(#[fixture(unicode_home)]
     let (fire, wait) = mpsc::channel::<()>();
     let session = rig
         .connect_with(
-            VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap(),
+            VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap(),
             None,
         )
         .expect("connects");
@@ -826,7 +853,7 @@ fn a_channel_open_that_fails_by_the_session_task_ending_is_a_lost_connection_bef
 fn a_vm_exit_while_the_sftp_subsystem_opens_is_not_marked_as_not_started(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let session = rig.connect_with(vm, None).unwrap();
     std::thread::scope(|scope| {
         // The server stops answering once it runs `freeze`, so the open cannot finish before the exit ends it.
@@ -880,7 +907,7 @@ fn a_connection_that_ended_marks_the_guards_error_only_before_the_start(#[fixtur
 fn a_vm_exit_is_not_marked_as_not_started_though_the_connection_ended_too(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let session = rig.connect_with(vm.clone(), None).unwrap();
     session.inner.transport.end("the connection was reset".to_owned());
     fire.send(()).unwrap();
@@ -1012,7 +1039,7 @@ fn an_exit_status_that_arrived_is_the_result_and_the_vm_exit_after_it_is_the_los
     let (fire, wait) = mpsc::channel::<()>();
     let session = rig
         .connect_with(
-            VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap(),
+            VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap(),
             None,
         )
         .unwrap();
