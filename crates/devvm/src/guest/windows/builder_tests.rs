@@ -748,6 +748,15 @@ const LOG_TEXT: &str = "cannot read the serial log";
 /// The failure to read the log at the wait, which a failed second read replaces.
 const LOG_WAIT_TEXT: &str = "the serial log failed during the wait";
 
+/// A host failure that says `text`, with a cause of its own as its source.
+fn host_failure(text: &str) -> Error {
+    Error::new(ErrorKind::Io, text).with_source(std::io::Error::other(cause_of(text)))
+}
+
+fn cause_of(text: &str) -> String {
+    format!("the cause of: {text}")
+}
+
 /// The result a launch must come to, as `Ok(true)` for a finished launch and `Ok(false)` for a restarted one, or the
 /// kind and the beginning of the error.
 fn expected(
@@ -820,22 +829,22 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                     Ending::Stall => End::stalled(stall(), None),
                     Ending::StallStatusUnknown => {
                         host_texts.push(STATUS_TEXT);
-                        End::stalled(stall(), Some(Error::new(ErrorKind::Io, STATUS_TEXT)))
+                        End::stalled(stall(), Some(host_failure(STATUS_TEXT)))
                     }
                     Ending::StatusUnknown => {
                         host_texts.push(STATUS_TEXT);
-                        End::failed(Error::new(ErrorKind::Io, STATUS_TEXT))
+                        End::failed(host_failure(STATUS_TEXT))
                     }
                     Ending::LogUnreadable => {
                         // A second failed read replaces this one.
                         if !read_failed {
                             host_texts.push(LOG_WAIT_TEXT);
                         }
-                        End::unreadable(Error::new(ErrorKind::Io, LOG_WAIT_TEXT))
+                        End::unreadable(host_failure(LOG_WAIT_TEXT))
                     }
                 };
                 if read_failed {
-                    end.log_read_again(Err(Error::new(ErrorKind::Io, LOG_TEXT)));
+                    end.log_read_again(Err(host_failure(LOG_TEXT)));
                     host_texts.push(LOG_TEXT);
                 }
 
@@ -855,19 +864,14 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                             assert!(!error.message().contains(LOG_WAIT_TEXT), "{row}: {error}");
                         }
                         assert!(!error.message().contains("as well"), "{row}: {error}");
-                        // The host's own failure is the headline, and so is the error itself, only when the guest
-                        // gave no account and the end told nothing.
-                        let is_the_host = matches!(account, Account::Nothing)
-                            && matches!(
-                                ending,
-                                Ending::CleanExit | Ending::StatusUnknown | Ending::LogUnreadable
-                            );
+                        // The first host failure's cause is the source, whether that failure or an account leads.
                         let source = std::error::Error::source(&error);
-                        if host_texts.is_empty() || (is_the_host && host_texts.len() == 1) {
-                            assert!(source.is_none(), "{row}");
-                        } else {
-                            let source = source.unwrap_or_else(|| panic!("{row}: no source"));
-                            assert!(source.to_string().contains(host_texts[0]), "{row}: {source}");
+                        match host_texts.first() {
+                            None => assert!(source.is_none(), "{row}"),
+                            Some(first) => {
+                                let source = source.unwrap_or_else(|| panic!("{row}: no source"));
+                                assert_eq!(source.to_string(), cause_of(first), "{row}");
+                            }
                         }
                     }
                     (expected, result) => panic!(

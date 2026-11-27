@@ -301,7 +301,7 @@ enum Launched {
 ///
 /// These headlines have kind [`ErrorKind::Unavailable`]. When there is none, the first host failure is the headline
 /// with its own kind. The host's failures (the VM process's status, the serial log) follow a headline once each,
-/// separated by `; `, and the first is the result's source. A failing exit carries what QEMU printed.
+/// separated by `; `; the first one's source is the result's source. A failing exit carries what QEMU printed.
 /// An end with no exit and no failure is an [`ErrorKind::Internal`] error: nothing says how the launch ended. It keeps
 /// the guest's `DEVVM-BASE-FAILED=` account in its message when the log holds one.
 fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
@@ -313,7 +313,7 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
         }
         return Err(Error::new(ErrorKind::Internal, message));
     }
-    let mut host: Vec<Error> = status.iter().chain(&log).cloned().collect();
+    let host: Vec<Error> = status.iter().chain(&log).cloned().collect();
     let powered_off = matches!(&exit, Some(Exit::Exited(exited)) if exited.status.success());
     let account = if let Some(why) = &serial.failed {
         let mut headline = guest_failed(why);
@@ -337,25 +337,23 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
     } else {
         exit.as_ref().filter(|_| !powered_off).map(|exit| ended(number, exit))
     };
-    let source = host.first().cloned();
-    let (error, joined) = match account {
-        Some(account) => (Error::new(ErrorKind::Unavailable, account), &host[..]),
-        None => match host.split_first() {
-            None => return Ok(Launched::Restarted),
-            Some(_) if host.len() == 1 => return Err(host.remove(0)),
-            Some((first, rest)) => (first.clone(), rest),
-        },
+    let (error, rest) = match (account, host.split_first()) {
+        // The account is a failure the host's first failure caused: it takes that failure's source.
+        (Some(account), Some((first, rest))) => (
+            Error::naming(ErrorKind::Unavailable, first, |first| format!("{account}; {first}")),
+            rest,
+        ),
+        (Some(account), None) => (Error::new(ErrorKind::Unavailable, account), &[][..]),
+        (None, None) => return Ok(Launched::Restarted),
+        (None, Some((first, []))) => return Err(first.clone()),
+        (None, Some((first, rest))) => (first.clone(), rest),
     };
-    let error = joined
+    let error = rest
         .iter()
         .fold(error, |error, other| error.with_step_naming(other, str::to_owned));
-    let error = match &exit {
+    Err(match &exit {
         Some(Exit::Exited(exited)) if !exited.status.success() => with_qemu_output(error, &exited.output),
         _ => error,
-    };
-    Err(match source {
-        Some(source) => error.with_source(source),
-        None => error,
     })
 }
 
