@@ -206,7 +206,7 @@ fn the_date_is_the_expiry_s_date_in_utc_near_midnight(#[fixture(unicode_home)] h
     let early = "2027-03-02T00:30:00Z";
     for (layer, (name, expires)) in [("late", late), ("early", early)].into_iter().enumerate() {
         let at: jiff::Timestamp = expires.parse().unwrap();
-        let expires = SystemTime::from(at);
+        let expires = SystemTime::try_from(at).unwrap();
         named_instance(&fx, name, home, 2 + layer as u8, Some(expires));
         let progress = memory();
         let engine = engine_at(&fx, expires + days(1), progress.clone());
