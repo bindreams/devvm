@@ -71,6 +71,8 @@ impl ErrorKind {
 /// Shared, so that an `Error` can be cloned with its source.
 type Source = std::sync::Arc<dyn std::error::Error + Send + Sync + 'static>;
 
+/// An error goes inside another only through [`Error::naming`] and [`Error::with_step_naming`]; `format!("{inner}")`
+/// into an error message is the mistake.
 #[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
@@ -161,8 +163,9 @@ impl Error {
         Error::new(kind, format!("{}: {source}", context.into())).with_source(source)
     }
 
-    /// This error as a `kind` failure of `context`: the body is `<context>: <this body>` and the source is this
-    /// error's source, not this error. The serial log and the tail stay where they were.
+    /// The same failure described again, as a `kind` failure of `context`: the body is `<context>: <this body>`, the
+    /// old kind is not shown, and the serial log, the tail and the source stay. A different failure that names this
+    /// one, its kind shown, is [`Error::naming`].
     pub(crate) fn with_context(mut self, kind: ErrorKind, context: impl fmt::Display) -> Error {
         self.body = format!("{context}: {}", self.body).into_boxed_str();
         self.kind = kind;
@@ -178,8 +181,42 @@ impl Error {
         self
     }
 
+    /// A new error of `kind` whose body is `text(<inner as "kind: sentence">)`, for a different failure that names
+    /// `inner`. It takes `inner`'s serial log, tail and source (as [`Error::with_context`] does): nothing of `inner` but
+    /// its sentence is in the body.
+    pub(crate) fn naming(kind: ErrorKind, inner: &Error, text: impl FnOnce(&str) -> String) -> Error {
+        let mut error = Error::new(kind, text(&inner.sentence()));
+        error.tail = inner.tail.clone();
+        error.source = inner.source.clone();
+        error.serial_log = inner.serial_log.clone();
+        error.render();
+        error
+    }
+
+    /// This error with a step that names `inner`, a second failure: `step(<inner as "kind: sentence">)` is added as
+    /// [`Error::with_step`] adds it. This error keeps its own source. `inner`'s serial log is taken when this error has
+    /// none (when both have one, this error's stays). `inner`'s tail follows this error's, each under its own label; a
+    /// tail equal to this error's is not repeated.
+    pub(crate) fn with_step_naming(self, inner: &Error, step: impl FnOnce(&str) -> String) -> Error {
+        let mut error = self.with_step(step(&inner.sentence()));
+        if error.serial_log.is_none() {
+            error.serial_log = inner.serial_log.clone();
+        }
+        if inner.tail != error.tail {
+            error.tail = format!("{}{}", error.tail, inner.tail).into_boxed_str();
+        }
+        error.render();
+        error
+    }
+
+    /// `<kind>: <body>`: what [`Error::naming`] and [`Error::with_step_naming`] put inside another error.
+    fn sentence(&self) -> String {
+        format!("{}: {}", self.kind.as_str(), self.body)
+    }
+
     /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
-    /// named next to it with `left`, what it left behind: the first failure stays the error.
+    /// named next to it with `left`, what it left behind: the first failure stays the error. `cleanup` is not devvm's
+    /// [`Error`]: that one is named with [`Error::with_step_naming`].
     pub(crate) fn after_cleanup(self, left: &str, cleanup: std::result::Result<(), impl fmt::Display>) -> Error {
         match cleanup {
             Err(failed) => self.with_step(format_args!("cleaning up failed as well, so {left} remains ({failed})")),
@@ -187,7 +224,8 @@ impl Error {
         }
     }
 
-    /// This error with a failure that came with it named after it; the first failure stays the error.
+    /// This error with a failure that came with it named after it; the first failure stays the error. `other` is not
+    /// devvm's [`Error`]: that one is named with [`Error::with_step_naming`].
     pub(crate) fn together_with(self, other: impl fmt::Display) -> Error {
         self.with_step(format_args!("{other} as well"))
     }

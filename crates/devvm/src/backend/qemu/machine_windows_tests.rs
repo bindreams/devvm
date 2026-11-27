@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::QemuMachine;
 use crate::Arch;
-use crate::ErrorKind;
+use crate::{Error, ErrorKind};
 use crate::backend::fake::{ask_to_crash, ask_to_exit};
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
 use crate::backend::{Machine, MachineRecord};
@@ -352,7 +352,7 @@ fn the_log_a_launched_machine_quotes_is_the_one_it_was_given(#[fixture(unicode_h
     std::fs::write(&log, "qemu: could not open the disk").unwrap();
     let machine = world.launched(log, 0, host::current());
 
-    let error = machine.exited("gone");
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
 
     assert!(error.message().contains("could not open the disk"), "{error}");
     world.end_qemu();
@@ -364,7 +364,7 @@ fn the_log_an_attached_machine_quotes_is_beside_the_serial_log(#[fixture(unicode
     std::fs::write(world.dir.join("qemu.log"), "qemu: out of memory").unwrap();
     let machine = world.attached();
 
-    let error = machine.exited("gone");
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
 
     assert!(error.message().contains("out of memory"), "{error}");
     world.end_qemu();
@@ -376,7 +376,7 @@ fn an_exited_machine_names_its_serial_log_before_the_output_it_quotes(#[fixture(
     std::fs::write(world.dir.join("qemu.log"), "qemu: out of memory").unwrap();
     let machine = world.attached();
 
-    let error = machine.exited("gone");
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
 
     let serial_log = world.dir.join("serial.log");
     assert_eq!(error.serial_log(), Some(serial_log.as_path()), "{error}");
@@ -412,7 +412,7 @@ fn the_output_a_launched_machine_quotes_is_only_what_its_own_launch_printed(#[fi
     append(&log, "qemu: this launch ran out of memory\n");
     let machine = world.launched(log, from, host::current());
 
-    let error = machine.exited("gone");
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
 
     assert!(error.message().contains("this launch ran out of memory"), "{error}");
     assert!(!error.message().contains("an earlier launch"), "{error}");

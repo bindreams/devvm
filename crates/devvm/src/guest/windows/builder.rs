@@ -698,9 +698,12 @@ impl<'a> Build<'a> {
 /// a kill that failed after it: the tree kill may have left a descendant running. An outcome that went well is the
 /// kill's error.
 fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
-    match outcome {
-        Err(error) => Err(error.after_cleanup("a VM process that may still run", killed)),
-        Ok(value) => killed.map(|()| value),
+    match (outcome, killed) {
+        (Err(error), Err(kill)) => Err(error.with_step_naming(&kill, |kill| {
+            format!("cleaning up failed as well, so a VM process that may still run remains ({kill})")
+        })),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(value), killed) => killed.map(|()| value),
     }
 }
 

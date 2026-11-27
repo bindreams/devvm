@@ -158,7 +158,7 @@ impl QemuMachine {
         if let Err(wait) = self.vm.wait() {
             return wait;
         }
-        self.exited(&error.body())
+        self.exited(error)
     }
 
     /// What QEMU printed in this launch, for an error: its text, or a note in brackets when it printed nothing or the
@@ -171,10 +171,11 @@ impl QemuMachine {
         }
     }
 
-    /// The error for a QEMU process that exited while devvm was using it, with what it printed in this launch as its
-    /// tail, whole.
-    fn exited(&self, what: &str) -> Error {
-        let mut error = Error::new(ErrorKind::ConnectionLost, format!("QEMU exited: {what}"))
+    /// `error`, which ended devvm's use of a QEMU process that has exited, described again as that exit, with what QEMU
+    /// printed in this launch as its tail, whole.
+    fn exited(&self, error: Error) -> Error {
+        let mut error = error
+            .with_context(ErrorKind::ConnectionLost, "QEMU exited")
             .with_serial_log(&self.record.serial_log);
         error.append_tail(&format!("QEMU's output ({})", self.log.display()), &self.output());
         error

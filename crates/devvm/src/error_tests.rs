@@ -323,6 +323,82 @@ fn or_serial_log_of_takes_the_path_of_the_other_error_only_when_there_is_none() 
     assert_eq!(without().or_serial_log_of(&without()).serial_log(), None);
 }
 
+// One error inside another ------------------------------------------------------------------------------------------
+
+/// An error with a source, a serial log and a tail, to be named inside another.
+fn inner() -> Error {
+    Error::new(ErrorKind::ConnectionLost, "lost")
+        .with_source(Marker)
+        .with_serial_log("/x/inner.log")
+        .with_tail("the inner log", "i\nj")
+}
+
+#[skuld::test]
+fn naming_puts_the_inner_sentence_with_its_kind_in_the_body_and_takes_the_rest_of_it() {
+    let mut named = String::new();
+    let error = Error::naming(ErrorKind::Unavailable, &inner(), |inner| {
+        named = inner.to_owned();
+        format!("cannot start ({inner})")
+    });
+    assert_eq!(named, "connection-lost: lost", "only the sentence, without path or tail");
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(
+        error.message(),
+        "cannot start (connection-lost: lost) (serial log: /x/inner.log)\nthe end of the inner log:\ni\nj"
+    );
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/inner.log")));
+    assert!(is_marked(&error), "the inner error's source");
+}
+
+#[skuld::test]
+fn naming_an_error_with_nothing_but_a_sentence_adds_nothing_else() {
+    let error = Error::naming(ErrorKind::Io, &Error::new(ErrorKind::Download, "refused"), |inner| {
+        format!("cannot fetch: {inner}")
+    });
+    assert_eq!(error.to_string(), "io: cannot fetch: download: refused");
+    assert_eq!(error.serial_log(), None);
+    assert!(error.source().is_none());
+}
+
+#[skuld::test]
+fn with_step_naming_adds_the_inner_sentence_as_a_step_and_takes_its_serial_log_and_tail() {
+    let outer = Error::new(ErrorKind::Io, "first").with_source(std::fmt::Error);
+    let error = outer.with_step_naming(&inner(), |inner| format!("{inner} as well"));
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(
+        error.message(),
+        "first; connection-lost: lost as well (serial log: /x/inner.log)\nthe end of the inner log:\ni\nj"
+    );
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/inner.log")));
+    assert!(error.source().is_some_and(|source| source.is::<std::fmt::Error>()), "its own source stays");
+}
+
+#[skuld::test]
+fn with_step_naming_keeps_its_own_serial_log_when_both_have_one() {
+    let outer = Error::new(ErrorKind::Io, "first").with_serial_log("/x/own.log");
+    let error = outer.with_step_naming(&inner(), |inner| format!("then {inner}"));
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/own.log")));
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
+    assert!(!error.message().contains("/x/inner.log"), "{error}");
+}
+
+#[skuld::test]
+fn with_step_naming_puts_the_inner_tail_after_its_own_each_under_its_label() {
+    let outer = Error::new(ErrorKind::Io, "first").with_tail("the outer log", "o");
+    let error = outer.with_step_naming(&inner(), |inner| format!("then {inner}"));
+    assert_eq!(
+        error.message(),
+        "first; then connection-lost: lost (serial log: /x/inner.log)\nthe end of the outer log:\no\nthe end of the inner log:\ni\nj"
+    );
+}
+
+#[skuld::test]
+fn with_step_naming_does_not_repeat_a_tail_equal_to_its_own() {
+    let tailed = |sentence: &str| Error::new(ErrorKind::Io, sentence).with_tail("the log", "a\nb");
+    let error = tailed("first").with_step_naming(&tailed("second"), |inner| format!("then {inner}"));
+    assert_eq!(error.message(), "first; then io: second\nthe end of the log:\na\nb");
+}
+
 /// An error with a message of its own and a source.
 #[derive(Debug)]
 struct Layer(&'static str, Option<Box<dyn std::error::Error + 'static>>);

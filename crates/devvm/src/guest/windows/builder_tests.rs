@@ -566,18 +566,17 @@ fn winpe_is_over_once_any_marker_has_been_seen() {
 fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
     let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
 
-    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+    let kill = Error::new(ErrorKind::Io, "cannot kill the VM").with_serial_log("/x/serial.log");
+
+    let error = after_kill(outcome, Err(kill)).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
-    assert!(
-        error.message().starts_with("the guest failed to build the base"),
-        "{error}"
+    assert_eq!(
+        error.message(),
+        "the guest failed to build the base; cleaning up failed as well, so a VM process that may still run remains \
+         (io: cannot kill the VM) (serial log: /x/serial.log)"
     );
-    assert!(error.message().contains("cannot kill the VM"), "{error}");
-    assert!(
-        error.message().contains("so a VM process that may still run remains"),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")), "{error}");
 }
 
 #[skuld::test]
