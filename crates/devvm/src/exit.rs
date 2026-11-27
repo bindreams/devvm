@@ -220,20 +220,17 @@ pub fn conclude(status_file: Option<&Path>, outcome: &Result<ExitStatus>, width:
         (Ok(()), Ok(_)) => (None, exit),
         (Ok(()), Err(error)) => (Some(format_error_line(error)), exit),
         (Err(failure), Ok(_)) => (Some(format_error_line(&failure)), DEVVM_ERROR_EXIT),
-        (Err(failure), Err(original)) => {
-            let message = format!(
-                "{}; original: {}: {}",
-                failure.message(),
-                original.kind().as_str(),
-                original.message()
-            );
-            (
-                Some(format_error_line(&Error::new(ErrorKind::StatusFile, message))),
-                DEVVM_ERROR_EXIT,
-            )
-        }
+        (Err(failure), Err(original)) => (
+            Some(format_error_line(&with_original(failure, original))),
+            DEVVM_ERROR_EXIT,
+        ),
     };
     Ending { exit, error_line }
+}
+
+/// `failure`, the status file's, with a step naming `original`, the command's: `<failure>; original: <kind>: <original>`.
+fn with_original(failure: Error, original: &Error) -> Error {
+    failure.with_step_naming(original, |original| format!("original: {original}"))
 }
 
 /// Writes the [`Ending::error_line`] `line` to `stderr`; with `colour`, its prefix is red.
