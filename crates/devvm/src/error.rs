@@ -122,29 +122,6 @@ impl Error {
         self.serial_log.as_deref()
     }
 
-    /// The message without the serial log path and with the tail, for an error that is embedded in another one: the
-    /// outer error carries a serial log of its own.
-    pub(crate) fn body(&self) -> String {
-        format!("{}{}", self.body, self.tail)
-    }
-
-    /// `<kind>: <body>`, which is what [`fmt::Display`] shows without the serial log path, for an error that is
-    /// embedded in another one: the outer error carries the serial log (see [`Error::or_serial_log_of`]).
-    pub(crate) fn embedded(&self) -> String {
-        format!("{}: {}", self.kind.as_str(), self.body())
-    }
-
-    /// This error with the serial log of `other` when it has none of its own.
-    pub(crate) fn or_serial_log_of(mut self, other: &Error) -> Error {
-        if self.serial_log.is_none()
-            && let Some(path) = &other.serial_log
-        {
-            self.serial_log = Some(path.clone());
-            self.render();
-        }
-        self
-    }
-
     /// `text` at the end of the message, after the serial log path and the tail, as it is. Kind, source and serial log
     /// stay.
     pub(crate) fn with_appended(mut self, text: &str) -> Error {

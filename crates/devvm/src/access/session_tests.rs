@@ -165,7 +165,7 @@ fn closed_without_status_is_no_exit_status(#[fixture(unicode_home)] home: &Path)
     let error = session.exec_collect("close-no-status").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NoExitStatus);
     assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
-    assert!(!error.body().contains("serial log"), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     // The connection is fine afterwards.
     assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0));
 }
@@ -574,7 +574,12 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
     arm_boot_bound(&session, Duration::from_millis(200));
     let error = session.exec_collect("hold").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.body().ends_with("boot bound of 200ms"), "{error}");
+    assert!(
+        error
+            .message()
+            .ends_with(&format!("boot bound of 200ms (serial log: {})", rig.serial_log.display())),
+        "{error}"
+    );
     assert!(error.message().contains("hold"), "{error}");
     assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
@@ -601,7 +606,6 @@ fn a_lost_connection_sets_the_serial_log_and_does_not_print_it_in_its_text() {
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost);
     assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
-    assert_eq!(error.body(), "running a command: the VM process exited");
     assert_eq!(
         error.message(),
         "running a command: the VM process exited (serial log: /x/serial.log)"
@@ -782,7 +786,7 @@ fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(u
     assert!(error.message().contains("channel could not be opened"), "{error}");
     assert!(!error.message().contains("the connection ended"), "{error}");
     assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
-    assert!(!error.body().contains("serial log"), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     assert_eq!(
         finished(&session, "exit 0").0,
         ExitStatus::Code(0),

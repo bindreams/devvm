@@ -346,9 +346,9 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
             Some((first, rest)) => (first.clone(), rest),
         },
     };
-    let error = joined.iter().fold(error, |error, other| {
-        error.with_step(other.embedded()).or_serial_log_of(other)
-    });
+    let error = joined
+        .iter()
+        .fold(error, |error, other| error.with_step_naming(other, str::to_owned));
     let error = match &exit {
         Some(Exit::Exited(exited)) if !exited.status.success() => with_qemu_output(error, &exited.output),
         _ => error,
@@ -688,7 +688,11 @@ impl<'a> Build<'a> {
                     )
                 })
                 .collect(),
-            Err(read) => format!("\nthe logs on the answer disk cannot be read: {}", read.body()),
+            Err(read) => {
+                return error.with_step_naming(&read, |read| {
+                    format!("the logs on the answer disk cannot be read ({read})")
+                });
+            }
         };
         error.with_appended(&logs)
     }

@@ -155,7 +155,7 @@ fn an_error_with_a_serial_log_shows_the_path_in_parentheses_after_its_body() {
 }
 
 #[skuld::test]
-fn the_path_comes_before_the_tail_and_the_tail_stays_in_the_body() {
+fn the_path_comes_before_the_tail_whatever_order_they_are_set_in() {
     let error = Error::new(ErrorKind::ConnectionLost, "lost")
         .with_serial_log("/x/serial.log")
         .with_tail("the log", "a\nb");
@@ -167,7 +167,6 @@ fn the_path_comes_before_the_tail_and_the_tail_stays_in_the_body() {
         error.to_string(),
         "connection-lost: lost (serial log: /x/serial.log)\nthe end of the log:\na\nb"
     );
-    assert_eq!(error.body(), "lost\nthe end of the log:\na\nb");
     let tail_first = Error::new(ErrorKind::Io, "cannot")
         .with_tail("the log", "a")
         .with_serial_log("/x/serial.log");
@@ -223,38 +222,32 @@ fn with_context_with_step_with_tail_and_clone_keep_the_serial_log_and_the_source
         (
             "with_context",
             base.clone().with_context(ErrorKind::Io, "reading"),
-            "reading: lost",
             "reading: lost (serial log: /x/serial.log)",
         ),
         (
             "with_step",
             base.clone().with_step("try again"),
-            "lost; try again",
             "lost; try again (serial log: /x/serial.log)",
         ),
         (
             "with_tail",
             base.clone().with_tail("the log", "a\nb"),
-            "lost\nthe end of the log:\na\nb",
             "lost (serial log: /x/serial.log)\nthe end of the log:\na\nb",
         ),
         (
             "after_cleanup",
             base.clone().after_cleanup("the file", Err("locked")),
-            "lost; cleaning up failed as well, so the file remains (locked)",
             "lost; cleaning up failed as well, so the file remains (locked) (serial log: /x/serial.log)",
         ),
         (
             "together_with",
             base.clone().together_with("a second failure"),
-            "lost; a second failure as well",
             "lost; a second failure as well (serial log: /x/serial.log)",
         ),
-        ("clone", base.clone(), "lost", "lost (serial log: /x/serial.log)"),
+        ("clone", base.clone(), "lost (serial log: /x/serial.log)"),
     ];
-    for (name, error, body, message) in cases {
+    for (name, error, message) in cases {
         assert_eq!(error.message(), message, "{name}");
-        assert_eq!(error.body(), body, "{name}");
         assert_eq!(
             error.serial_log(),
             Some(std::path::Path::new("/x/serial.log")),
@@ -262,13 +255,6 @@ fn with_context_with_step_with_tail_and_clone_keep_the_serial_log_and_the_source
         );
         assert!(is_marked(&error), "{name}: the source stays");
     }
-}
-
-#[skuld::test]
-fn body_has_no_serial_log_path() {
-    let error = Error::new(ErrorKind::Io, "cannot").with_serial_log("/x/serial.log");
-    assert_eq!(error.body(), "cannot");
-    assert_eq!(Error::new(ErrorKind::Io, "cannot").body(), "cannot");
 }
 
 #[skuld::test]
@@ -289,38 +275,10 @@ fn with_appended_puts_the_text_at_the_end_after_the_serial_log_and_keeps_kind_an
         .with_appended("\nQEMU's output:\nnothing");
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
-        error.body(),
-        "launch failed\nthe end of the log:\na\nQEMU's output:\nnothing"
-    );
-    assert_eq!(
         error.message(),
         "launch failed (serial log: /x/serial.log)\nthe end of the log:\na\nQEMU's output:\nnothing"
     );
     assert!(is_marked(&error));
-}
-
-#[skuld::test]
-fn embedded_is_the_kind_and_the_body_without_the_serial_log_path() {
-    let error = Error::new(ErrorKind::ConnectionLost, "lost")
-        .with_serial_log("/x/serial.log")
-        .with_tail("the log", "a");
-    assert_eq!(error.embedded(), "connection-lost: lost\nthe end of the log:\na");
-    assert_eq!(Error::new(ErrorKind::Io, "cannot").embedded(), "io: cannot");
-}
-
-#[skuld::test]
-fn or_serial_log_of_takes_the_path_of_the_other_error_only_when_there_is_none() {
-    let with = |path: &str| Error::new(ErrorKind::Io, "a").with_serial_log(path);
-    let without = || Error::new(ErrorKind::Io, "b");
-
-    let taken = without().or_serial_log_of(&with("/x/other.log"));
-    assert_eq!(taken.serial_log(), Some(std::path::Path::new("/x/other.log")));
-    assert_eq!(taken.message(), "b (serial log: /x/other.log)");
-
-    let kept = with("/x/own.log").or_serial_log_of(&with("/x/other.log"));
-    assert_eq!(kept.serial_log(), Some(std::path::Path::new("/x/own.log")));
-
-    assert_eq!(without().or_serial_log_of(&without()).serial_log(), None);
 }
 
 // One error inside another ------------------------------------------------------------------------------------------

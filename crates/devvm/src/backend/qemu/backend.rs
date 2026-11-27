@@ -65,10 +65,9 @@ impl QemuBackend {
         if let Some(vm) = vm
             && let Err(kill) = vm.kill()
         {
-            return error.with_step(format_args!(
-                "the frozen QEMU could not be killed either ({}) and is still running",
-                kill.embedded()
-            ));
+            return error.with_step_naming(&kill, |kill| {
+                format!("the frozen QEMU could not be killed either ({kill}) and is still running")
+            });
         }
         // Only this launch's own files: nobody else draws its name while its claim file is there.
         remove_files(self.host, &endpoint.launch_files(), Some(claim), &mut |message| {

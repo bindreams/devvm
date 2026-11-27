@@ -869,8 +869,8 @@ fn host_failures_that_follow_a_headline_are_named_without_their_serial_log_and_t
     assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     assert!(
         error
-            .body()
-            .contains("; io: cannot read the status; io: cannot read the log"),
+            .message()
+            .contains("; io: cannot read the status; io: cannot read the log (serial log: /x/status.log)"),
         "{error}"
     );
 }

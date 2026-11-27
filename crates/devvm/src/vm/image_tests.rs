@@ -429,10 +429,6 @@ fn a_failed_reconnect_returns_its_own_error_with_the_first_failure_named(#[fixtu
         "the first failure's serial log stays: {error}"
     );
     assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
-    assert!(
-        error.message().contains("channel could not be opened") && !error.body().contains("serial log"),
-        "{error}"
-    );
 }
 
 #[skuld::test]

@@ -285,12 +285,12 @@ fn a_boot_id_that_stayed_unreadable_names_the_last_failed_read_the_bound_and_the
     for part in [
         "boot-0",
         "boot bound of 1m 30s",
-        "(the last read failed: reading the guest's boot id with `cat` ended with exit code 1)",
+        "; the last read failed (io: reading the guest's boot id with `cat` ended with exit code 1)",
     ] {
         assert!(error.message().contains(part), "{part}: {error}");
     }
     assert_eq!(error.serial_log(), Some(target.serial_log.as_path()), "{error}");
-    assert!(!error.body().contains("serial log"), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
 }
 
 #[skuld::test]
@@ -304,7 +304,9 @@ fn a_failed_read_that_names_the_serial_log_is_embedded_without_it(#[fixture(unic
 
     assert_eq!(error.message().matches("serial log:").count(), 1, "{error}");
     assert!(
-        error.message().contains("(the last read failed: reading the boot id)"),
+        error
+            .message()
+            .contains("; the last read failed (connection-lost: reading the boot id)"),
         "{error}"
     );
 }

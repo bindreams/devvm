@@ -387,7 +387,7 @@ fn an_exited_machine_names_its_serial_log_before_the_output_it_quotes(#[fixture(
         "{error}"
     );
     assert!(error.message().ends_with("\nqemu: out of memory"), "{error}");
-    assert!(!error.body().contains("serial log"), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     world.end_qemu();
 }
 

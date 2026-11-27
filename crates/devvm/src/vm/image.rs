@@ -375,9 +375,9 @@ impl Vm {
         match attempt(session) {
             Err(first) if is_not_started(&first) => match self.reconnect(op) {
                 Ok(fresh) => attempt(&fresh),
-                Err(failed) => Err(failed
-                    .with_step(format_args!("the first attempt failed: {}", first.body()))
-                    .or_serial_log_of(&first)),
+                Err(failed) => {
+                    Err(failed.with_step_naming(&first, |first| format!("the first attempt failed: {first}")))
+                }
             },
             result => result,
         }

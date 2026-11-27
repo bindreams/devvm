@@ -157,7 +157,7 @@ pub(crate) fn write_ssh_entry(engine: &Engine, dir: &InstanceDir, target: &SshTa
         known_hosts: dir.path().join("known_hosts"),
     };
     match (top_level, configs.write_entry(&entry, &target.host_public)) {
-        (Err(first), Err(second)) => Err(first.together_with(second.body())),
+        (Err(first), Err(second)) => Err(first.with_step_naming(&second, |second| format!("{second} as well"))),
         (Err(first), Ok(())) => Err(first),
         (Ok(()), written) => written,
     }
@@ -212,10 +212,10 @@ fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine
     Ok(())
 }
 
-/// The error of a start that failed (`cause`) while the machine it had launched could not be killed (`kill`).
+/// The error of a start that failed (`cause`) while the machine it had launched could not be killed (`kill`): `cause`,
+/// its source kept, with the kill named in its text.
 fn survivor(cause: Error, kill: Error, what_happens: &str) -> Error {
-    cause.with_step(format_args!(
-        "the machine that failed to start could not be killed either ({}) and may still run: {what_happens}",
-        kill.body()
-    ))
+    cause.with_step_naming(&kill, |kill| {
+        format!("the machine that failed to start could not be killed either ({kill}) and may still run: {what_happens}")
+    })
 }
