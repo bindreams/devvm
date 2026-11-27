@@ -142,12 +142,7 @@ pub(crate) fn reconnect_after_reset(
     let vm = engine.vm_exit(machine).map_err(|e| awaiting_ssh(e, target))?;
     let mut last_failed_read: Option<Error> = None;
     loop {
-        let session = connect(engine, target, &vm, bound).map_err(|e| match &last_failed_read {
-            Some(read) => e.with_step_naming(read, |read| {
-                format!("the last read of the boot id failed ({read}) as well")
-            }),
-            None => e,
-        })?;
+        let session = connect(engine, target, &vm, bound).map_err(|e| connect_failed(e, last_failed_read.as_ref()))?;
         last_failed_read = match read_boot_id(guest, &session) {
             Ok(ReadBootIdOutcome::Id(id)) if id != old_id => {
                 let session = ready_session(engine, guest, name, target, &vm, bound, session)?;
@@ -165,6 +160,16 @@ pub(crate) fn reconnect_after_reset(
         // The read is asked again, paced as a connection retry is: a guest that answers at once with "not yet" (a
         // Windows guest's session 0 does, with 126) would otherwise be asked in a tight loop.
         std::thread::sleep(RETRY_PAUSE);
+    }
+}
+
+/// The failure of a connect after a reset, `error`, naming the read of the boot id before it that failed, if any.
+pub(super) fn connect_failed(error: Error, last_failed_read: Option<&Error>) -> Error {
+    match last_failed_read {
+        Some(read) => error.with_step_naming(read, |read| {
+            format!("the last read of the boot id failed ({read}) as well")
+        }),
+        None => error,
     }
 }
 

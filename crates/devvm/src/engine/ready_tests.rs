@@ -10,7 +10,7 @@ use crate::access::session::RETRY_PAUSE;
 use crate::access::{BootBound, SshTarget};
 use crate::backend::MachineRecord;
 use crate::engine::engine_tests::{EngineFixture, engine_fixture, gone_process, memory, running_machine};
-use crate::engine::ready::{boot_id_unchanged, connect_ready, reconnect_after_reset};
+use crate::engine::ready::{boot_id_unchanged, connect_failed, connect_ready, reconnect_after_reset};
 use crate::guest::GuestOs;
 use crate::instance::name::InstanceName;
 use crate::progress::{Event, Outcome};
@@ -309,6 +309,24 @@ fn a_failed_read_that_names_the_serial_log_is_embedded_without_it(#[fixture(unic
             .contains("; the last read failed (connection-lost: reading the boot id)"),
         "{error}"
     );
+}
+
+#[skuld::test]
+fn a_connect_that_fails_after_a_failed_read_names_the_read_and_the_serial_log_once() {
+    let connect =
+        Error::new(ErrorKind::ConnectionLost, "connecting: the VM process exited").with_serial_log("/x/serial.log");
+    let read = Error::new(ErrorKind::ConnectionLost, "reading the boot id").with_serial_log("/x/serial.log");
+
+    let error = connect_failed(connect, Some(&read));
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert_eq!(
+        error.message(),
+        "connecting: the VM process exited; the last read of the boot id failed (connection-lost: reading the boot \
+         id) as well (serial log: /x/serial.log)"
+    );
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    assert_eq!(error.message().matches("serial log:").count(), 1, "{error}");
 }
 
 #[skuld::test]
