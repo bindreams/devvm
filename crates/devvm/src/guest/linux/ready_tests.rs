@@ -100,6 +100,61 @@ fn a_status_other_than_done_is_an_error_naming_it() {
     }
 }
 
+// A loss with a serial log, a tail and a source -----------------------------------------------------------------------
+
+const LOSS_END: &str = " (serial log: /x/serial.log)\nthe end of the serial log:\nlast line";
+
+/// A reply of `stdout` with exit code 0, whose output was lost to a VM exit that carries a source, a serial log and a
+/// tail.
+fn lost_reply(stdout: &str) -> Output {
+    Output {
+        loss: Some(
+            Error::new(ErrorKind::ConnectionLost, "the VM exited")
+                .with_source(std::io::Error::other("the cause"))
+                .with_serial_log("/x/serial.log")
+                .with_tail("the serial log", "last line"),
+        ),
+        ..reply(0, stdout)
+    }
+}
+
+#[skuld::test]
+fn a_loss_that_leads_gives_the_error_its_serial_log_tail_and_source() {
+    let error = readiness(&lost_reply("")).unwrap_err();
+
+    assert!(
+        headline(&error).contains("the output was lost (connection-lost: the VM exited)"),
+        "{error}"
+    );
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/serial.log")));
+    assert!(error.message().ends_with(LOSS_END), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 2, "{error}");
+    let source = std::error::Error::source(&error).expect("the loss's source");
+    assert_eq!(source.to_string(), "the cause");
+}
+
+#[skuld::test]
+fn a_loss_that_does_not_lead_is_a_step_with_its_serial_log_and_tail_and_not_the_source() {
+    let error = readiness(&lost_reply(r#"{"status": "running"}"#)).unwrap_err();
+
+    assert!(headline(&error).contains("its status is `running`"), "{error}");
+    assert!(
+        error
+            .message()
+            .contains("; the output was lost as well (connection-lost: the VM exited)"),
+        "{error}"
+    );
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/serial.log")));
+    assert!(error.message().ends_with(LOSS_END), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 2, "{error}");
+    assert!(
+        std::error::Error::source(&error).is_none(),
+        "the loss is a second failure; the headline keeps its own source"
+    );
+}
+
 // The error as one structure ==========================================================================================
 
 /// What the headline of a readiness error says went wrong, in the order the causes rank.

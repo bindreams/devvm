@@ -59,7 +59,8 @@ fn assess(output: &Output) -> std::result::Result<Readiness, Cause<'_>> {
 
 impl Cause<'_> {
     /// The error: the cause as the headline, then the facts it does not already carry (the exit or signal, whether it
-    /// dumped core, stdout, stderr, the loss). The kind is the loss's when the output was lost, `Io` otherwise.
+    /// dumped core, stdout, stderr). A loss that leads is named with [`Error::naming`] and gives its kind; otherwise the
+    /// kind is `Io` and a loss is a step named with [`Error::with_step_naming`].
     fn into_error(self, output: &Output) -> Error {
         let stderr = output.stderr_lossy();
         let stderr = stderr.trim();
@@ -71,16 +72,7 @@ impl Cause<'_> {
                 format!("{what}: {stderr}")
             }
         };
-        let headline = match &self {
-            Cause::Signal(name) => with_stderr(format!("it was killed by signal {name}")),
-            Cause::UndocumentedExit(code) => with_stderr(format!("it exited with exit code {code}")),
-            // Its headline names the loss, so `Error::naming` writes it below.
-            Cause::OutputLost(_) => String::new(),
-            Cause::DoneWithExit1 => "its status is `done` but its exit code 1 is not 0 or 2".to_owned(),
-            Cause::Reply(problem) => problem.clone(),
-        };
         let stderr_led = matches!(self, Cause::Signal(_) | Cause::UndocumentedExit(_)) && !stderr.is_empty();
-        let loss_led = matches!(self, Cause::OutputLost(_));
         let exit_led = matches!(
             self,
             Cause::Signal(_) | Cause::UndocumentedExit(_) | Cause::DoneWithExit1
@@ -108,13 +100,21 @@ impl Cause<'_> {
         let sentence = |headline: &str| {
             format!("cloud-init did not finish a normal first boot: {headline} (`{CLOUD_INIT_STATUS}`{facts})")
         };
-        match (&output.loss, loss_led) {
-            (Some(loss), true) => Error::naming(loss.kind(), loss, |loss| {
-                sentence(&format!("the output was lost ({loss})"))
-            }),
-            (Some(loss), false) => Error::new(ErrorKind::Io, sentence(&headline))
-                .with_step_naming(loss, |loss| format!("the output was lost as well ({loss})")),
-            (None, _) => Error::new(ErrorKind::Io, sentence(&headline)),
+        let headline = match self {
+            Cause::OutputLost(loss) => {
+                return Error::naming(loss.kind(), loss, |loss| {
+                    sentence(&format!("the output was lost ({loss})"))
+                });
+            }
+            Cause::Signal(name) => with_stderr(format!("it was killed by signal {name}")),
+            Cause::UndocumentedExit(code) => with_stderr(format!("it exited with exit code {code}")),
+            Cause::DoneWithExit1 => "its status is `done` but its exit code 1 is not 0 or 2".to_owned(),
+            Cause::Reply(problem) => problem,
+        };
+        let error = Error::new(ErrorKind::Io, sentence(&headline));
+        match &output.loss {
+            Some(loss) => error.with_step_naming(loss, |loss| format!("the output was lost as well ({loss})")),
+            None => error,
         }
     }
 }
