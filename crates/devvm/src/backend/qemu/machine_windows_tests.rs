@@ -8,7 +8,6 @@ use serde_json::json;
 
 use super::QemuMachine;
 use crate::Arch;
-use crate::ErrorKind;
 use crate::backend::fake::{ask_to_crash, ask_to_exit};
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
 use crate::backend::{Machine, MachineRecord};
@@ -18,6 +17,7 @@ use crate::test_support::fake_vm;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::Sock;
 use crate::test_support::refusing::Refusing;
+use crate::{Error, ErrorKind};
 
 /// A fake VM, a control socket for it and the record that names both.
 struct World {
@@ -268,12 +268,12 @@ fn shutdown_waits_for_the_exit_after_a_request_cannot_be_written_because_the_soc
 
 /// Shutdown of a machine whose QEMU stays alive, against a server that runs `script` once with the link's `Refusing`:
 /// an error of `kind`, with the leftovers of the live machine kept, and no wait for a process that nothing was asked
-/// to end.
+/// to end. Returns the error.
 fn shutdown_fails_while_qemu_lives(
     home: &Path,
     kind: ErrorKind,
     script: impl Fn(&mut Session, &Refusing) + Send + 'static,
-) {
+) -> Error {
     let world = world(home);
     let watch = Refusing::new(world.watch());
     let seen_by_script = watch.clone();
@@ -293,6 +293,30 @@ fn shutdown_fails_while_qemu_lives(
     drop(machine);
     server.join().unwrap();
     world.end_qemu();
+    error
+}
+
+#[skuld::test]
+fn a_vm_that_pauses_while_it_shuts_down_is_unavailable_and_names_its_serial_log_once(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let error = shutdown_fails_while_qemu_lives(home, ErrorKind::Unavailable, |session, _| {
+        answer_running(session);
+        session.answer(json!({}));
+        session.event("STOP", None);
+        session.answer(json!({ "status": "io-error", "running": false }));
+        // QEMU is alive: the connection stays up until the client drops it.
+        while session.command().is_some() {}
+    });
+
+    assert!(
+        error
+            .message()
+            .starts_with("the VM stopped (io-error) while it was shutting down"),
+        "{error}"
+    );
+    assert_eq!(error.serial_log(), Some(home.join("serial.log").as_path()), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
 }
 
 #[skuld::test]
@@ -352,7 +376,7 @@ fn the_log_a_launched_machine_quotes_is_the_one_it_was_given(#[fixture(unicode_h
     std::fs::write(&log, "qemu: could not open the disk").unwrap();
     let machine = world.launched(log, 0, host::current());
 
-    let error = machine.exited("gone");
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
 
     assert!(error.message().contains("could not open the disk"), "{error}");
     world.end_qemu();
@@ -364,9 +388,34 @@ fn the_log_an_attached_machine_quotes_is_beside_the_serial_log(#[fixture(unicode
     std::fs::write(world.dir.join("qemu.log"), "qemu: out of memory").unwrap();
     let machine = world.attached();
 
-    let error = machine.exited("gone");
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
 
     assert!(error.message().contains("out of memory"), "{error}");
+    world.end_qemu();
+}
+
+#[skuld::test]
+fn an_exited_machine_names_its_serial_log_before_the_output_it_quotes(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home);
+    std::fs::write(world.dir.join("qemu.log"), "qemu: out of memory").unwrap();
+    let machine = world.attached();
+
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
+
+    let serial_log = world.dir.join("serial.log");
+    assert_eq!(error.serial_log(), Some(serial_log.as_path()), "{error}");
+    assert!(
+        error
+            .message()
+            .starts_with(&format!("QEMU exited: gone (serial log: {})\n", serial_log.display())),
+        "{error}"
+    );
+    assert!(error.message().ends_with("\nqemu: out of memory"), "{error}");
+    assert!(
+        error.message().contains("\nQEMU's output ("),
+        "the whole output, not its end: {error}"
+    );
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     world.end_qemu();
 }
 
@@ -391,7 +440,7 @@ fn the_output_a_launched_machine_quotes_is_only_what_its_own_launch_printed(#[fi
     append(&log, "qemu: this launch ran out of memory\n");
     let machine = world.launched(log, from, host::current());
 
-    let error = machine.exited("gone");
+    let error = machine.exited(Error::new(ErrorKind::ConnectionLost, "gone"));
 
     assert!(error.message().contains("this launch ran out of memory"), "{error}");
     assert!(!error.message().contains("an earlier launch"), "{error}");

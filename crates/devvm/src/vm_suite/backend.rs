@@ -1057,10 +1057,7 @@ fn vm_qemu_shutdown_of_a_paused_machine_fails_naming_the_state_and_returns(
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains("paused"), "{error}");
-    assert!(
-        error.message().contains(&spec.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(spec.serial_log.as_path()), "{error}");
     assert!(is_running(&record), "the process is alive until the test kills it");
     machine.kill().unwrap();
 }

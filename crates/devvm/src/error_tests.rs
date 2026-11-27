@@ -118,12 +118,241 @@ fn with_tail_ends_the_message_with_the_last_20_lines_of_the_text() {
 }
 
 #[skuld::test]
+fn append_tail_writes_the_label_it_is_given() {
+    let mut error = Error::new(ErrorKind::ConnectionLost, "QEMU exited: gone");
+    error.append_tail("QEMU's output (/x/qemu.log)", "boom");
+    assert_eq!(error.message(), "QEMU exited: gone\nQEMU's output (/x/qemu.log):\nboom");
+}
+
+#[skuld::test]
 fn with_tail_of_empty_text_adds_nothing_and_keeps_the_source() {
     let source = std::io::Error::other("cause");
     let error = Error::io(ErrorKind::Io, "cannot", source).with_tail("a log", "");
     assert_eq!(error.message(), "cannot: cause");
     let error = error.with_tail("a log", "x");
     assert!(error.source().is_some(), "the source stays");
+}
+
+/// A marker error, as `access::session` puts on an operation that had not started.
+#[derive(Debug)]
+struct Marker;
+
+impl std::fmt::Display for Marker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("marker")
+    }
+}
+
+impl std::error::Error for Marker {}
+
+fn is_marked(error: &Error) -> bool {
+    error.source().is_some_and(|source| source.is::<Marker>())
+}
+
+#[skuld::test]
+fn an_error_with_a_serial_log_shows_the_path_in_parentheses_after_its_body() {
+    let error = Error::new(ErrorKind::ConnectionLost, "the VM process exited").with_serial_log("/x/serial.log");
+    assert_eq!(error.message(), "the VM process exited (serial log: /x/serial.log)");
+    assert_eq!(
+        error.to_string(),
+        "connection-lost: the VM process exited (serial log: /x/serial.log)"
+    );
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/serial.log")));
+    assert_eq!(Error::new(ErrorKind::Io, "no log").serial_log(), None);
+}
+
+#[skuld::test]
+fn the_path_comes_before_the_tail_whatever_order_they_are_set_in() {
+    let error = Error::new(ErrorKind::ConnectionLost, "lost")
+        .with_serial_log("/x/serial.log")
+        .with_tail("the log", "a\nb");
+    assert_eq!(
+        error.message(),
+        "lost (serial log: /x/serial.log)\nthe end of the log:\na\nb"
+    );
+    assert_eq!(
+        error.to_string(),
+        "connection-lost: lost (serial log: /x/serial.log)\nthe end of the log:\na\nb"
+    );
+    let tail_first = Error::new(ErrorKind::Io, "cannot")
+        .with_tail("the log", "a")
+        .with_serial_log("/x/serial.log");
+    assert_eq!(
+        tail_first.message(),
+        "cannot (serial log: /x/serial.log)\nthe end of the log:\na",
+        "the order the parts are set in does not matter"
+    );
+}
+
+#[skuld::test]
+fn a_step_or_context_added_after_a_tail_lands_after_the_sentence_not_after_the_tail() {
+    let tailed = || {
+        Error::new(ErrorKind::ConnectionLost, "lost")
+            .with_serial_log("/x/serial.log")
+            .with_tail("the log", "a\nb")
+    };
+    let tail = "\nthe end of the log:\na\nb";
+    let step = tailed().with_step("try again");
+    assert_eq!(
+        step.message(),
+        format!("lost; try again (serial log: /x/serial.log){tail}")
+    );
+    let context = tailed().with_context(ErrorKind::Io, "reading");
+    assert_eq!(
+        context.message(),
+        format!("reading: lost (serial log: /x/serial.log){tail}")
+    );
+    let twice = tailed().with_tail("another log", "c");
+    assert_eq!(
+        twice.message(),
+        format!("lost (serial log: /x/serial.log){tail}\nthe end of another log:\nc")
+    );
+}
+
+#[skuld::test]
+fn a_body_with_a_newline_keeps_the_path_after_its_last_line_of_body_and_before_the_tail() {
+    let error = Error::new(ErrorKind::Io, "first\nsecond")
+        .with_serial_log("/x/serial.log")
+        .with_tail("the log", "a");
+    assert_eq!(
+        error.message(),
+        "first\nsecond (serial log: /x/serial.log)\nthe end of the log:\na"
+    );
+}
+
+#[skuld::test]
+fn with_context_with_step_with_tail_and_clone_keep_the_serial_log_and_the_source() {
+    let base = Error::new(ErrorKind::ConnectionLost, "lost")
+        .with_source(Marker)
+        .with_serial_log("/x/serial.log");
+    let cases = [
+        (
+            "with_context",
+            base.clone().with_context(ErrorKind::Io, "reading"),
+            "reading: lost (serial log: /x/serial.log)",
+        ),
+        (
+            "with_step",
+            base.clone().with_step("try again"),
+            "lost; try again (serial log: /x/serial.log)",
+        ),
+        (
+            "with_tail",
+            base.clone().with_tail("the log", "a\nb"),
+            "lost (serial log: /x/serial.log)\nthe end of the log:\na\nb",
+        ),
+        (
+            "after_cleanup",
+            base.clone().after_cleanup("the file", Err("locked")),
+            "lost; cleaning up failed as well, so the file remains (locked) (serial log: /x/serial.log)",
+        ),
+        (
+            "together_with",
+            base.clone().together_with("a second failure"),
+            "lost; a second failure as well (serial log: /x/serial.log)",
+        ),
+        ("clone", base.clone(), "lost (serial log: /x/serial.log)"),
+    ];
+    for (name, error, message) in cases {
+        assert_eq!(error.message(), message, "{name}");
+        assert_eq!(
+            error.serial_log(),
+            Some(std::path::Path::new("/x/serial.log")),
+            "{name}"
+        );
+        assert!(is_marked(&error), "{name}: the source stays");
+    }
+}
+
+#[skuld::test]
+fn with_serial_log_replaces_an_earlier_path() {
+    let error = Error::new(ErrorKind::Io, "cannot")
+        .with_serial_log("/x/first.log")
+        .with_serial_log("/y/second.log");
+    assert_eq!(error.message(), "cannot (serial log: /y/second.log)");
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/y/second.log")));
+}
+
+// One error inside another --------------------------------------------------------------------------------------------
+
+/// An error with a source, a serial log and a tail, to be named inside another.
+fn inner() -> Error {
+    Error::new(ErrorKind::ConnectionLost, "lost")
+        .with_source(Marker)
+        .with_serial_log("/x/inner.log")
+        .with_tail("the inner log", "i\nj")
+}
+
+#[skuld::test]
+fn naming_puts_the_inner_sentence_with_its_kind_in_the_body_and_takes_the_rest_of_it() {
+    let mut named = String::new();
+    let error = Error::naming(ErrorKind::Unavailable, &inner(), |inner| {
+        named = inner.to_owned();
+        format!("cannot start ({inner})")
+    });
+    assert_eq!(
+        named, "connection-lost: lost",
+        "only the sentence, without path or tail"
+    );
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(
+        error.message(),
+        "cannot start (connection-lost: lost) (serial log: /x/inner.log)\nthe end of the inner log:\ni\nj"
+    );
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/inner.log")));
+    assert!(is_marked(&error), "the inner error's source");
+}
+
+#[skuld::test]
+fn naming_an_error_with_nothing_but_a_sentence_adds_nothing_else() {
+    let error = Error::naming(ErrorKind::Io, &Error::new(ErrorKind::Download, "refused"), |inner| {
+        format!("cannot fetch: {inner}")
+    });
+    assert_eq!(error.to_string(), "io: cannot fetch: download: refused");
+    assert_eq!(error.serial_log(), None);
+    assert!(error.source().is_none());
+}
+
+#[skuld::test]
+fn with_step_naming_adds_the_inner_sentence_as_a_step_and_takes_its_serial_log_and_tail() {
+    let outer = Error::new(ErrorKind::Io, "first").with_source(std::fmt::Error);
+    let error = outer.with_step_naming(&inner(), |inner| format!("{inner} as well"));
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(
+        error.message(),
+        "first; connection-lost: lost as well (serial log: /x/inner.log)\nthe end of the inner log:\ni\nj"
+    );
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/inner.log")));
+    assert!(
+        error.source().is_some_and(|source| source.is::<std::fmt::Error>()),
+        "its own source stays"
+    );
+}
+
+#[skuld::test]
+fn with_step_naming_keeps_its_own_serial_log_when_both_have_one() {
+    let outer = Error::new(ErrorKind::Io, "first").with_serial_log("/x/own.log");
+    let error = outer.with_step_naming(&inner(), |inner| format!("then {inner}"));
+    assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/own.log")));
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
+    assert!(!error.message().contains("/x/inner.log"), "{error}");
+}
+
+#[skuld::test]
+fn with_step_naming_puts_the_inner_tail_after_its_own_each_under_its_label() {
+    let outer = Error::new(ErrorKind::Io, "first").with_tail("the outer log", "o");
+    let error = outer.with_step_naming(&inner(), |inner| format!("then {inner}"));
+    assert_eq!(
+        error.message(),
+        "first; then connection-lost: lost (serial log: /x/inner.log)\nthe end of the outer log:\no\nthe end of the inner log:\ni\nj"
+    );
+}
+
+#[skuld::test]
+fn with_step_naming_does_not_repeat_a_tail_equal_to_its_own() {
+    let tailed = |sentence: &str| Error::new(ErrorKind::Io, sentence).with_tail("the log", "a\nb");
+    let error = tailed("first").with_step_naming(&tailed("second"), |inner| format!("then {inner}"));
+    assert_eq!(error.message(), "first; then io: second\nthe end of the log:\na\nb");
 }
 
 /// An error with a message of its own and a source.

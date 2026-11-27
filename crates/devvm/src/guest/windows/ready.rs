@@ -80,18 +80,18 @@ fn probe_command() -> Result<String> {
 fn assess(output: &Output) -> ProbeOutcome {
     let stdout = output.stdout_lossy();
     let stderr = output.stderr_lossy();
-    let failed = |what: String| {
-        ProbeOutcome::Failed(Error::new(
-            ErrorKind::Io,
-            format!(
-                "the guest's readiness probe could not run: {what} (stdout: {}; stderr: {})",
-                stdout.trim(),
-                stderr.trim()
-            ),
-        ))
+    let sentence = |what: &str| {
+        format!(
+            "the guest's readiness probe could not run: {what} (stdout: {}; stderr: {})",
+            stdout.trim(),
+            stderr.trim()
+        )
     };
+    let failed = |what: String| ProbeOutcome::Failed(Error::new(ErrorKind::Io, sentence(&what)));
     if let Some(loss) = &output.loss {
-        return failed(format!("its output was lost ({loss})"));
+        return ProbeOutcome::Failed(Error::naming(ErrorKind::Io, loss, |loss| {
+            sentence(&format!("its output was lost ({loss})"))
+        }));
     }
     match output.status {
         ExitStatus::Code(126) if stderr.contains(NOT_IN_SESSION) => ProbeOutcome::NotYet(NOT_IN_SESSION.to_owned()),

@@ -1055,10 +1055,9 @@ fn shutdown_of_a_vm_that_is_already_paused_fails_naming_the_state_and_sends_no_p
     drop(qmp);
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-    assert!(
-        error.message().contains("paused") && error.message().contains("serial.log"),
-        "{error}"
-    );
+    assert!(error.message().contains("paused"), "{error}");
+    assert_eq!(error.message().matches("serial.log").count(), 1, "{error}");
+    assert_eq!(error.serial_log(), Some(serial), "{error}");
     server.join().unwrap();
     assert_eq!(*log.lock().unwrap(), ["qmp_capabilities", "query-status"]);
 }

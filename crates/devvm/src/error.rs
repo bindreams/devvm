@@ -1,8 +1,8 @@
-//! The crate's error type: a stable kind, a message, and an optional source.
+//! The crate's error type: a stable kind, a message, and an optional source, serial log and tail.
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 #[path = "error_tests.rs"]
@@ -71,20 +71,55 @@ impl ErrorKind {
 /// Shared, so that an `Error` can be cloned with its source.
 type Source = std::sync::Arc<dyn std::error::Error + Send + Sync + 'static>;
 
+// Put one error inside another only with `naming` or `with_step_naming`, never `format!("{inner}")`.
 #[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
-    message: String,
+    // The texts and the path are boxed, not `String` and `PathBuf`, so that an `Error` stays small enough to return in
+    // a `Result` (`clippy::result_large_err`).
+    /// The message without the serial log and the tail.
+    body: Box<str>,
+    /// The tails, each starting with a newline; they follow the serial log.
+    tail: Box<str>,
     source: Option<Source>,
+    serial_log: Option<Box<Path>>,
+    /// What [`Error::message`] returns; [`Error::render`] rebuilds it after a part changes.
+    message: Box<str>,
 }
 
 impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Error {
+        let body = message.into().into_boxed_str();
         Error {
             kind,
-            message: message.into(),
+            message: body.clone(),
+            body,
+            tail: Box::default(),
             source: None,
+            serial_log: None,
         }
+    }
+
+    /// Makes the message: the body, then ` (serial log: <path>)` when there is a serial log, then the tail.
+    fn render(&mut self) {
+        let mut message = self.body.to_string();
+        if let Some(path) = &self.serial_log {
+            message.push_str(&format!(" (serial log: {})", path.display()));
+        }
+        message.push_str(&self.tail);
+        self.message = message.into_boxed_str();
+    }
+
+    /// Sets the serial log the error is about, replacing an earlier one. The message shows its path after the body.
+    pub(crate) fn with_serial_log(mut self, path: impl Into<PathBuf>) -> Error {
+        self.serial_log = Some(path.into().into_boxed_path());
+        self.render();
+        self
+    }
+
+    /// The serial log of the guest this error is about, if any.
+    pub fn serial_log(&self) -> Option<&Path> {
+        self.serial_log.as_deref()
     }
 
     /// Attaches the underlying error, reachable through [`std::error::Error::source`].
@@ -98,24 +133,59 @@ impl Error {
         Error::new(kind, format!("{}: {source}", context.into())).with_source(source)
     }
 
-    /// This error as a `kind` failure of `context`: the message is `<context>: <this message>` and the source is this
-    /// error's source, not this error.
-    pub(crate) fn with_context(self, kind: ErrorKind, context: impl fmt::Display) -> Error {
-        Error {
-            kind,
-            message: format!("{context}: {}", self.message),
-            source: self.source,
-        }
-    }
-
-    /// This error with `step` after its message: what the person can do about it, or what came with it.
-    pub(crate) fn with_step(mut self, step: impl fmt::Display) -> Error {
-        self.message = format!("{}; {step}", self.message);
+    /// The same failure described again, as a `kind` failure of `context`: the body is `<context>: <this body>`, the
+    /// old kind is not shown, and the serial log, the tail and the source stay. A different failure that names this
+    /// one, its kind shown, is [`Error::naming`].
+    pub(crate) fn with_context(mut self, kind: ErrorKind, context: impl fmt::Display) -> Error {
+        self.body = format!("{context}: {}", self.body).into_boxed_str();
+        self.kind = kind;
+        self.render();
         self
     }
 
+    /// This error with `step` after its body, before the serial log and the tail: what the person can do about it, or
+    /// what came with it.
+    pub(crate) fn with_step(mut self, step: impl fmt::Display) -> Error {
+        self.body = format!("{}; {step}", self.body).into_boxed_str();
+        self.render();
+        self
+    }
+
+    /// A new error of `kind` whose body is `text(<inner as "kind: sentence">)`, for a different failure that names
+    /// `inner`. It takes `inner`'s serial log, tail and source.
+    pub(crate) fn naming(kind: ErrorKind, inner: &Error, text: impl FnOnce(&str) -> String) -> Error {
+        let mut error = Error::new(kind, text(&inner.sentence()));
+        error.tail = inner.tail.clone();
+        error.source = inner.source.clone();
+        error.serial_log = inner.serial_log.clone();
+        error.render();
+        error
+    }
+
+    /// This error with a step that names `inner`, a second failure: `step(<inner as "kind: sentence">)` is added as
+    /// [`Error::with_step`] adds it. This error keeps its own source. `inner`'s serial log is taken when this error has
+    /// none (when both have one, this error's stays). `inner`'s tail follows this error's, each under its own label; a
+    /// tail equal to this error's is not repeated.
+    pub(crate) fn with_step_naming(self, inner: &Error, step: impl FnOnce(&str) -> String) -> Error {
+        let mut error = self.with_step(step(&inner.sentence()));
+        if error.serial_log.is_none() {
+            error.serial_log = inner.serial_log.clone();
+        }
+        if inner.tail != error.tail {
+            error.tail = format!("{}{}", error.tail, inner.tail).into_boxed_str();
+        }
+        error.render();
+        error
+    }
+
+    /// `<kind>: <body>`: what [`Error::naming`] and [`Error::with_step_naming`] put inside another error.
+    fn sentence(&self) -> String {
+        format!("{}: {}", self.kind.as_str(), self.body)
+    }
+
     /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
-    /// named next to it with `left`, what it left behind: the first failure stays the error.
+    /// named next to it with `left`, what it left behind: the first failure stays the error. `cleanup` is not devvm's
+    /// [`Error`]: that one is named with [`Error::with_step_naming`].
     pub(crate) fn after_cleanup(self, left: &str, cleanup: std::result::Result<(), impl fmt::Display>) -> Error {
         match cleanup {
             Err(failed) => self.with_step(format_args!("cleaning up failed as well, so {left} remains ({failed})")),
@@ -123,7 +193,8 @@ impl Error {
         }
     }
 
-    /// This error with a failure that came with it named after it; the first failure stays the error.
+    /// This error with a failure that came with it named after it; the first failure stays the error. `other` is not
+    /// devvm's [`Error`]: that one is named with [`Error::with_step_naming`].
     pub(crate) fn together_with(self, other: impl fmt::Display) -> Error {
         self.with_step(format_args!("{other} as well"))
     }
@@ -141,17 +212,23 @@ impl Error {
         }
     }
 
-    /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, after its message.
+    /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, as a tail.
     pub(crate) fn with_tail(mut self, what: &str, text: &str) -> Error {
-        self.append_tail(what, &last_lines(text));
+        self.append_tail(&format!("the end of {what}"), &last_lines(text));
         self
     }
 
-    /// `tail`, already the last lines of `what`, after the message; nothing when it is empty.
-    pub(crate) fn append_tail(&mut self, what: &str, tail: &str) {
+    /// `tail` under the line `<label>:`, after the message and the serial log path, as it is: the caller has cut it to
+    /// the lines it wants and says in `label` which part of what it is. Nothing when it is empty.
+    pub(crate) fn append_tail(&mut self, label: &str, tail: &str) {
         if !tail.is_empty() {
-            self.message = format!("{}\nthe end of {what}:\n{tail}", self.message);
+            self.push_tail(&format!("\n{label}:\n{tail}"));
         }
+    }
+
+    fn push_tail(&mut self, text: &str) {
+        self.tail = format!("{}{text}", self.tail).into_boxed_str();
+        self.render();
     }
 
     pub fn kind(&self) -> ErrorKind {

@@ -273,3 +273,27 @@ fn conclude_gives_the_exit_and_the_line_to_print(#[fixture(unicode_home)] home: 
     assert!(line.starts_with("devvm-error: status-file: "), "{line}");
     assert!(line.ends_with("original: io: bad"), "{line}");
 }
+
+#[skuld::test]
+fn a_status_file_failure_keeps_its_source_and_the_original_errors_serial_log() {
+    let failure = Error::io(
+        ErrorKind::StatusFile,
+        "cannot write s.json",
+        std::io::Error::other("denied"),
+    );
+    let original = Error::new(ErrorKind::Unavailable, "the guest stopped").with_serial_log("/x/serial.log");
+
+    let error = super::with_original(failure, &original);
+
+    assert_eq!(error.kind(), ErrorKind::StatusFile);
+    assert_eq!(
+        error.message(),
+        "cannot write s.json: denied; original: unavailable: the guest stopped (serial log: /x/serial.log)"
+    );
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")), "{error}");
+    assert_eq!(
+        std::error::Error::source(&error).map(ToString::to_string).as_deref(),
+        Some("denied"),
+        "{error}"
+    );
+}

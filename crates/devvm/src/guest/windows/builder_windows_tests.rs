@@ -573,6 +573,28 @@ fn a_serial_log_that_cannot_be_read_after_the_guest_exited_gets_the_same(#[fixtu
 }
 
 #[skuld::test]
+fn an_answer_disk_that_cannot_be_read_is_a_step_of_the_failure_before_its_tails(#[fixture(unicode_home)] home: &Path) {
+    let winpe = Launch::crashing("firmware line\r\n").before(|spec| {
+        std::fs::write(answer_disk(spec), b"not a FAT volume").unwrap();
+    });
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![winpe]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    let message = error.message();
+    let step = message
+        .find("; the logs on the answer disk cannot be read (io: cannot read ")
+        .unwrap_or_else(|| panic!("{message}"));
+    let tail = message
+        .find("\nthe end of the serial log:\nfirmware line")
+        .unwrap_or_else(|| panic!("{message}"));
+    assert!(step < tail, "{message}");
+    assert!(message.contains("as a FAT volume"), "{message}");
+}
+
+#[skuld::test]
 fn the_failed_marker_fails_the_build_at_once_and_only_its_prefix_is_read(#[fixture(unicode_home)] home: &Path) {
     let german = "Der Zugriff auf den Pfad wurde verweigert: \u{fc}ber den Server";
     let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![

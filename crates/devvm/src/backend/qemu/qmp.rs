@@ -616,8 +616,8 @@ impl Qmp {
         }
     }
 
-    /// Fails with `Unavailable` unless the run state is one of `acceptable`, naming the state and the serial log: a
-    /// paused VM ignores a powerdown and a reset, and a caller must not wait for either.
+    /// Fails with `Unavailable` unless the run state is one of `acceptable`: a paused VM ignores a powerdown and a reset,
+    /// and a caller must not wait for either.
     pub(crate) fn require_state(&mut self, acceptable: &[&str], action: &str, serial_log: &Path) -> Result<()> {
         let status = self.query_status()?;
         if acceptable.contains(&status.state.as_str()) {
@@ -626,12 +626,12 @@ impl Qmp {
         Err(Error::new(
             ErrorKind::Unavailable,
             format!(
-                "cannot {action}: the VM is {}, not {}; its serial log is {}",
+                "cannot {action}: the VM is {}, not {}",
                 status.state,
-                acceptable.join(" or "),
-                serial_log.display()
+                acceptable.join(" or ")
             ),
-        ))
+        )
+        .with_serial_log(serial_log))
     }
 
     /// The `hostfwd` rules and the ports QEMU bound for them (HMP `info usernet`, the only place a port-0 forward is

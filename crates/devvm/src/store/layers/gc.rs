@@ -325,34 +325,32 @@ enum Reason {
     ReadFailed(Error),
 }
 
-impl std::fmt::Display for Reason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Reason::Missing => f.write_str("is missing"),
-            Reason::Unreadable(why) => write!(f, "is unreadable ({why})"),
-            Reason::OtherLayer => f.write_str("names another layer"),
-            Reason::ReadFailed(cause) => write!(f, "cannot be read ({})", cause.message()),
-        }
-    }
-}
-
 /// The abort over the record of kept `layer` in `dir`. To make the store collectable again, every hold on the layer
 /// must go, or the directory must move aside.
 fn record_abort(layer: &LayerRef, dir: &Path, reason: Reason, holders: &[Holder]) -> Error {
     let holders: Vec<String> = holders.iter().map(Holder::to_string).collect();
-    let message = format!(
-        "cannot collect: the record of kept layer {} generation {} ({}) {reason}, so its ancestors are unknown; \
-         nothing was deleted; it is kept as {}; to recover, move {} aside or release every hold on it",
-        layer.key,
-        layer.generation,
-        dir.display(),
-        holders.join(" and "),
-        dir.display()
-    );
-    match reason {
-        Reason::ReadFailed(cause) => Error::new(cause.kind(), message).with_source(cause),
-        _ => Error::new(ErrorKind::Store, message),
-    }
+    let message = |reason: &str| {
+        format!(
+            "cannot collect: the record of kept layer {} generation {} ({}) {reason}, so its ancestors are unknown; \
+             nothing was deleted; it is kept as {}; to recover, move {} aside or release every hold on it",
+            layer.key,
+            layer.generation,
+            dir.display(),
+            holders.join(" and "),
+            dir.display()
+        )
+    };
+    let reason = match reason {
+        Reason::ReadFailed(cause) => {
+            return Error::naming(cause.kind(), &cause, |cause| {
+                message(&format!("cannot be read ({cause})"))
+            });
+        }
+        Reason::Missing => "is missing".to_owned(),
+        Reason::Unreadable(why) => format!("is unreadable ({why})"),
+        Reason::OtherLayer => "names another layer".to_owned(),
+    };
+    Error::new(ErrorKind::Store, message(&reason))
 }
 
 /// How to make a store collectable again after an abort over `key`'s unparseable `current` file at `path`.

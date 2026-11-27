@@ -9,8 +9,8 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::access::keys::InstanceKeys;
 use crate::access::session::{
-    BootGate, ClientHandler, Connect, Context, Failure, Transport, Watch, connect_tcp, humanly, is_not_started,
-    not_started,
+    BootGate, ClientHandler, Connect, Context, Failure, Transport, Watch, WatchEnd, connect_tcp, humanly,
+    is_not_started, not_started,
 };
 use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit, runtime};
 use crate::contain::VmProcess;
@@ -51,11 +51,7 @@ fn output_on_an_extended_data_stream_other_than_stderr_is_an_error_naming_it(#[f
     assert!(error.message().contains("extended data stream 2"), "{error}");
     // Stream 1 is stderr, as ever.
     let output = session.exec_collect("extended-data 1").unwrap();
-    assert_eq!(
-        output.stderr,
-        b"on a stream of its own
-"
-    );
+    assert_eq!(output.stderr, b"on a stream of its own\n");
 }
 
 #[skuld::test]
@@ -87,11 +83,7 @@ fn output_lost_after_the_exit_status_is_reported_with_the_status(#[fixture(unico
     // Collected into memory, the status and the output that came before the loss are kept, and the loss is carried.
     let output = session.exec_collect("status-then-extended-data 2").unwrap();
     assert_eq!(output.status, ExitStatus::Code(7));
-    assert_eq!(
-        output.stdout,
-        b"before the status
-"
-    );
+    assert_eq!(output.stdout, b"before the status\n");
     let loss = output.loss.expect("the loss is carried with the output");
     assert!(loss.message().contains("extended data stream 2"), "{loss}");
 }
@@ -113,11 +105,7 @@ fn echo_round_trips_through_exec_collect(#[fixture(unicode_home)] home: &Path) {
 fn a_command_that_reads_stdin_sees_the_end_of_it(#[fixture(unicode_home)] home: &Path) {
     let output = Rig::new(home).connect().exec_collect("read-stdin").unwrap();
     assert_eq!(output.status, ExitStatus::Code(0));
-    assert_eq!(
-        output.stdout,
-        b"stdin ended
-"
-    );
+    assert_eq!(output.stdout, b"stdin ended\n");
 }
 
 #[skuld::test]
@@ -164,6 +152,8 @@ fn closed_without_status_is_no_exit_status(#[fixture(unicode_home)] home: &Path)
     let session = rig.connect();
     let error = session.exec_collect("close-no-status").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NoExitStatus);
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     // The connection is fine afterwards.
     assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0));
 }
@@ -175,10 +165,7 @@ fn mid_command_drop_is_connection_lost(#[fixture(unicode_home)] home: &Path) {
     let error = session.exec_collect("drop-connection").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("drop-connection"), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -214,7 +201,7 @@ fn all_256_byte_values_arrive_intact_on_both_streams(#[fixture(unicode_home)] ho
 fn a_vm_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let session = rig.connect_with(vm, None).unwrap();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
@@ -224,10 +211,7 @@ fn a_vm_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)] hom
         let error = running.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
         assert!(error.message().contains("VM process exited"), "{error}");
-        assert!(
-            error.message().contains(&rig.serial_log.display().to_string()),
-            "{error}"
-        );
+        assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
     });
 }
 
@@ -256,7 +240,7 @@ fn a_vm_watcher_that_cannot_wait_ends_the_wait_with_its_reason(#[fixture(unicode
     let (fire, wait) = mpsc::channel::<()>();
     let vm = VmExit::when(move || {
         let _ = wait.recv();
-        Err("the handle is gone".to_owned())
+        Err(Error::new(ErrorKind::Io, "the handle is gone"))
     })
     .unwrap();
     let session = rig.connect_with(vm, None).unwrap();
@@ -350,7 +334,7 @@ fn connect_retries_while_refused_and_stops_when_the_vm_exits(#[fixture(unicode_h
     target.addr = refused_addr();
     let (progress, messages) = ChannelProgress::new();
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let error = std::thread::scope(|scope| {
         let connecting = scope.spawn(|| {
             SshSession::connect(
@@ -383,10 +367,7 @@ fn a_connect_without_a_boot_bound_to_a_peer_that_accepts_and_never_speaks_ends_i
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains(&rig.sshd.addr().to_string()), "{error}");
     assert!(error.message().contains("handshake bound"), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -470,10 +451,7 @@ fn a_boot_bound_that_has_passed_ends_a_connect_naming_the_address_and_the_serial
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("boot bound of 0s"), "{error}");
     assert!(error.message().contains(&rig.sshd.addr().to_string()), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -509,7 +487,7 @@ fn the_boot_bound_ends_a_connect_with_the_failure_it_last_saw() {
     let error = connect.out_of_time(Some(refused), awaiting, bound);
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains(&connect.ctx.addr.to_string()), "{error}");
-    assert!(error.message().contains("serial.log"), "{error}");
+    assert_eq!(error.serial_log(), Some(Path::new("serial.log")), "{error}");
     assert!(error.message().contains("within 1m 30s"), "{error}");
     assert!(!error.message().contains("boot bound of"), "{error}");
 }
@@ -584,12 +562,15 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
     arm_boot_bound(&session, Duration::from_millis(200));
     let error = session.exec_collect("hold").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("boot bound of 200ms ("), "{error}");
-    assert!(error.message().contains("hold"), "{error}");
     assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
+        error.message().ends_with(&format!(
+            "boot bound of 200ms (serial log: {})",
+            rig.serial_log.display()
+        )),
         "{error}"
     );
+    assert!(error.message().contains("hold"), "{error}");
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -599,6 +580,52 @@ fn a_duration_is_told_in_units_a_person_reads() {
     assert_eq!(humanly(Duration::from_millis(200)), "200ms");
     // Too long for a signed duration: still told, not refused.
     assert!(!humanly(Duration::MAX).is_empty());
+}
+
+#[skuld::test]
+fn a_lost_connection_sets_the_serial_log_and_does_not_print_it_in_its_text() {
+    let ctx = Context {
+        addr: "127.0.0.1:22".parse().unwrap(),
+        user: "user".to_owned(),
+        serial_log: std::path::PathBuf::from("/x/serial.log"),
+        host_public: "HOST-PUBLIC".to_owned(),
+    };
+
+    let error = ctx.lost("running a command", "the VM process exited");
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    assert_eq!(
+        error.message(),
+        "running a command: the VM process exited (serial log: /x/serial.log)"
+    );
+}
+
+#[skuld::test]
+fn a_vm_that_cannot_be_watched_names_the_failed_wait_and_keeps_its_source() {
+    let ctx = Context {
+        addr: "127.0.0.1:22".parse().unwrap(),
+        user: "user".to_owned(),
+        serial_log: std::path::PathBuf::from("/x/serial.log"),
+        host_public: "HOST-PUBLIC".to_owned(),
+    };
+    let wait = Error::io(
+        ErrorKind::Io,
+        "cannot wait on the VM process",
+        std::io::Error::other("access denied"),
+    );
+
+    let error = ctx.vm_ended("running a command", &WatchEnd::Unwatched(wait));
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    assert_eq!(
+        error.message(),
+        "running a command: it cannot be told whether the VM process is still running \
+         (io: cannot wait on the VM process: access denied) (serial log: /x/serial.log)"
+    );
+    let source = std::error::Error::source(&error).expect("the wait's source");
+    assert_eq!(source.to_string(), "access denied");
 }
 
 /// A connect to `target`, with no VM to watch and no boot bound.
@@ -691,7 +718,7 @@ fn a_finished_boot_is_no_longer_ended_by_the_boot_bound(#[fixture(unicode_home)]
     let (fire, wait) = mpsc::channel::<()>();
     let session = rig
         .connect_with(
-            VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap(),
+            VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap(),
             None,
         )
         .expect("connects");
@@ -774,6 +801,8 @@ fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(u
     assert_eq!(error.kind(), ErrorKind::Io, "the connection lives: {error}");
     assert!(error.message().contains("channel could not be opened"), "{error}");
     assert!(!error.message().contains("the connection ended"), "{error}");
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
     assert_eq!(
         finished(&session, "exit 0").0,
         ExitStatus::Code(0),
@@ -824,7 +853,7 @@ fn a_channel_open_that_fails_by_the_session_task_ending_is_a_lost_connection_bef
 fn a_vm_exit_while_the_sftp_subsystem_opens_is_not_marked_as_not_started(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let session = rig.connect_with(vm, None).unwrap();
     std::thread::scope(|scope| {
         // The server stops answering once it runs `freeze`, so the open cannot finish before the exit ends it.
@@ -878,7 +907,7 @@ fn a_connection_that_ended_marks_the_guards_error_only_before_the_start(#[fixtur
 fn a_vm_exit_is_not_marked_as_not_started_though_the_connection_ended_too(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap();
     let session = rig.connect_with(vm.clone(), None).unwrap();
     session.inner.transport.end("the connection was reset".to_owned());
     fire.send(()).unwrap();
@@ -915,7 +944,7 @@ fn a_closed_host_output_closes_the_channel_and_returns_host_output_closed(#[fixt
     let mut stderr = Vec::new();
     let end = session.exec("write-forever", &mut RefusesWrites, &mut stderr).unwrap();
     match end {
-        ExecEnd::HostOutputClosed { error, status } => {
+        ExecEnd::HostOutputClosed { error, status, .. } => {
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, None, "the command had not ended");
         }
@@ -949,7 +978,7 @@ fn a_write_that_fails_after_the_exit_status_arrived_keeps_the_status(#[fixture(u
         .exec("status-then-marker", &mut RefusesWrites, &mut stderr)
         .unwrap();
     match end {
-        ExecEnd::HostOutputClosed { error, status } => {
+        ExecEnd::HostOutputClosed { error, status, .. } => {
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, Some(ExitStatus::Code(7)), "the command's result is not lost");
         }
@@ -1010,7 +1039,7 @@ fn an_exit_status_that_arrived_is_the_result_and_the_vm_exit_after_it_is_the_los
     let (fire, wait) = mpsc::channel::<()>();
     let session = rig
         .connect_with(
-            VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap(),
+            VmExit::when(move || wait.recv().map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))).unwrap(),
             None,
         )
         .unwrap();
@@ -1134,7 +1163,7 @@ fn a_flush_that_fails_at_the_end_is_a_closed_host_output_that_keeps_the_status(#
     let mut stderr = Vec::new();
     let end = session.exec("echo hi", &mut FailsToFlush, &mut stderr).unwrap();
     match end {
-        ExecEnd::HostOutputClosed { error, status } => {
+        ExecEnd::HostOutputClosed { error, status, .. } => {
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, Some(ExitStatus::Code(0)), "the command's result is not lost");
         }

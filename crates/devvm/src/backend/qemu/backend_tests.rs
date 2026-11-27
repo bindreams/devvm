@@ -1,9 +1,30 @@
 use std::path::Path;
 
-use super::log_length;
+use super::{log_length, unkilled};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
+use crate::{Error, ErrorKind};
+
+#[skuld::test]
+fn a_frozen_qemu_that_could_not_be_killed_is_named_in_the_launch_failure_which_keeps_its_source_and_serial_log() {
+    let error = Error::new(ErrorKind::Io, "cannot give the launch's hold to QEMU")
+        .with_source(std::fmt::Error)
+        .with_serial_log("/x/serial.log");
+    let kill = Error::new(ErrorKind::Io, "cannot kill the VM process 7").with_serial_log("/y/other.log");
+
+    let error = unkilled(error, &kill);
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    assert_eq!(
+        error.message(),
+        "cannot give the launch's hold to QEMU; the frozen QEMU could not be killed either (io: cannot kill the VM \
+         process 7) and is still running (serial log: /x/serial.log)"
+    );
+    let source = std::error::Error::source(&error).expect("the launch failure's source");
+    assert!(source.is::<std::fmt::Error>(), "{source:?}");
+}
 
 #[skuld::test]
 fn a_log_that_is_not_there_has_length_0(#[fixture(unicode_home)] home: &Path) {

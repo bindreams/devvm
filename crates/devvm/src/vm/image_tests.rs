@@ -17,7 +17,9 @@ use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::ops::ops_tests::{running_instance, short_bound_instance};
 use crate::vm::{Guest, Handle, ops};
-use crate::{Command, Dirs, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use crate::{
+    Command, Dirs, Error, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability,
+};
 use secrecy::ExposeSecret;
 use skuld::env;
 
@@ -264,11 +266,7 @@ fn a_vm_whose_reboot_failed_connects_again_for_its_next_operation_and_keeps_that
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
     vm.run(&Command::new(["echo", "again"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(
         fx.server.connections() - before,
         1,
@@ -309,11 +307,7 @@ fn a_vm_whose_session_died_connects_again_for_its_next_operation(#[fixture(unico
 
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
 }
 
@@ -331,11 +325,7 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_and_runs_the_c
 
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
     let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
     assert_eq!(sent, 1, "the command was sent once");
@@ -371,11 +361,7 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_run_to(#[f
     vm.run_to(&Command::new(["echo", "after"]), &mut out, &mut Vec::new())
         .unwrap();
 
-    assert_eq!(
-        out,
-        b"after
-"
-    );
+    assert_eq!(out, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
     let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
     assert_eq!(sent, 1, "the command was sent once");
@@ -424,7 +410,11 @@ fn a_failed_reconnect_returns_its_own_error_with_the_first_failure_named(#[fixtu
     assert_eq!(error.kind(), ErrorKind::Unavailable, "the reconnect's kind: {error}");
     assert!(error.message().contains("is not running"), "{error}");
     assert!(error.message().contains("channel could not be opened"), "{error}");
-    assert!(error.message().contains("serial log"), "{error}");
+    assert!(
+        error.serial_log().is_some(),
+        "the first failure's serial log stays: {error}"
+    );
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
 }
 
 #[skuld::test]
@@ -513,10 +503,8 @@ fn a_command_whose_connection_was_lost_after_it_was_sent_is_not_run_again(#[fixt
 }
 
 /// A new connection to `instance` whose VM watcher ends with the verdict `unwatched` once `end` is sent to.
-fn session_with_a_watcher_to_end(
-    instance: &Instance,
-) -> (SshSession, mpsc::Sender<std::result::Result<(), String>>, VmExit) {
-    let (end, ended) = mpsc::channel::<std::result::Result<(), String>>();
+fn session_with_a_watcher_to_end(instance: &Instance) -> (SshSession, mpsc::Sender<crate::Result<()>>, VmExit) {
+    let (end, ended) = mpsc::channel::<crate::Result<()>>();
     let exit = VmExit::when(move || ended.recv().unwrap_or(Ok(()))).unwrap();
     let dir = instance.dir();
     let running = read_target(&instance.engine, dir, &dir.op_shared().unwrap()).unwrap();
@@ -540,17 +528,14 @@ fn a_vm_whose_sessions_watcher_went_unwatched_connects_again_for_its_next_operat
     let (session, end, exit) = session_with_a_watcher_to_end(&instance);
     let vm = vm_over(session, instance);
     vm.run(&Command::new(["echo", "before"])).unwrap();
-    end.send(Err("the VM process cannot be waited on".to_owned())).unwrap();
+    end.send(Err(Error::new(ErrorKind::Io, "the VM process cannot be waited on")))
+        .unwrap();
     runtime::wait(exit.gone());
     let before = fx.server.connections();
 
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
 }
 
@@ -565,7 +550,8 @@ fn after_a_reboot_a_vm_serves_its_operations_on_the_session_that_found_the_new_b
     vm.run(&Command::new(["echo", "before"])).unwrap();
     vm.reboot().unwrap();
     // The session to the old boot is unusable from here on; if the Vm still held it, the next operation would connect.
-    end.send(Err("the old boot is gone".to_owned())).unwrap();
+    end.send(Err(Error::new(ErrorKind::Io, "the old boot is gone")))
+        .unwrap();
     runtime::wait(exit.gone());
     let before = fx.server.connections();
 

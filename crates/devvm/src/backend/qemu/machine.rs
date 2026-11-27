@@ -150,15 +150,18 @@ impl QemuMachine {
 
     /// `error` with what the process left behind, when the error means QEMU is gone: only a closed control socket
     /// (`ConnectionLost`) is a QEMU on its way out, so this waits for the exit before it reads the log. Any other error
-    /// is about the connection and says nothing of the process, which may be alive.
+    /// is about the connection and says nothing of the process, which may be alive. A failed wait is named after the
+    /// session's loss.
     fn explain(&self, error: Error) -> Error {
         if error.kind() != ErrorKind::ConnectionLost {
             return error;
         }
         if let Err(wait) = self.vm.wait() {
-            return wait;
+            return error
+                .with_step_naming(&wait, |wait| format!("waiting for QEMU to exit failed ({wait})"))
+                .with_serial_log(&self.record.serial_log);
         }
-        self.exited(error.message())
+        self.exited(error)
     }
 
     /// What QEMU printed in this launch, for an error: its text, or a note in brackets when it printed nothing or the
@@ -171,17 +174,13 @@ impl QemuMachine {
         }
     }
 
-    /// The error for a QEMU process that exited while devvm was using it, quoting what it printed in this launch.
-    fn exited(&self, what: &str) -> Error {
-        Error::new(
-            ErrorKind::ConnectionLost,
-            format!(
-                "QEMU exited: {what}; its output ({}):\n{}\nthe serial log is {}",
-                self.log.display(),
-                self.output(),
-                self.record.serial_log.display()
-            ),
-        )
+    /// `error` as QEMU's exit (`ConnectionLost`), with all that QEMU printed in this launch as its tail.
+    fn exited(&self, error: Error) -> Error {
+        let mut error = error
+            .with_context(ErrorKind::ConnectionLost, "QEMU exited")
+            .with_serial_log(&self.record.serial_log);
+        error.append_tail(&format!("QEMU's output ({})", self.log.display()), &self.output());
+        error
     }
 
     /// `Unavailable` for a machine launched with `-no-reboot`, which a reset would end.
@@ -212,11 +211,9 @@ impl QemuMachine {
             Ok(VmEnd::Exited) => Ok(()),
             Ok(VmEnd::Paused(state)) => Err(Error::new(
                 ErrorKind::Unavailable,
-                format!(
-                    "the VM stopped ({state}) while it was shutting down; its serial log is {}",
-                    self.record.serial_log.display()
-                ),
-            )),
+                format!("the VM stopped ({state}) while it was shutting down"),
+            )
+            .with_serial_log(&self.record.serial_log)),
             Err(e) if e.kind() == ErrorKind::ConnectionLost => Ok(()),
             Err(e) => Err(e),
         }
