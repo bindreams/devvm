@@ -157,7 +157,9 @@ impl QemuMachine {
             return error;
         }
         if let Err(wait) = self.vm.wait() {
-            return error.with_step_naming(&wait, |wait| format!("waiting for QEMU to exit failed ({wait})"));
+            return error
+                .with_step_naming(&wait, |wait| format!("waiting for QEMU to exit failed ({wait})"))
+                .with_serial_log(&self.record.serial_log);
         }
         self.exited(error)
     }

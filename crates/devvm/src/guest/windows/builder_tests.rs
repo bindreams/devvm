@@ -477,7 +477,7 @@ fn winpes_logs_follow_the_tail_keep_the_source_and_serial_log_and_a_later_step_l
         "launch 1 stalled; cleaning up failed as well (serial log: /x/serial.log)\n\
          the end of the serial log:\nfirmware line\n\
          logs/winpe.log (6 bytes), last lines:\na\nb\n\
-         logs/setupact.log (0 bytes), last lines:\n(it is empty)"
+         logs/setupact.log (0 bytes), last lines:\n(no text)"
     );
 }
 

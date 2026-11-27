@@ -338,7 +338,8 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
         exit.as_ref().filter(|_| !powered_off).map(|exit| ended(number, exit))
     };
     let (error, rest) = match (account, host.split_first()) {
-        // The account is a failure the host's first failure caused: it takes that failure's source.
+        // The account leads and names the host's first failure; the result carries that failure's serial log, tail
+        // and source, whether or not it caused the account.
         (Some(account), Some((first, rest))) => (
             Error::naming(ErrorKind::Unavailable, first, |first| format!("{account}; {first}")),
             rest,
@@ -699,8 +700,8 @@ fn with_winpe_files(mut error: Error, logs: Result<Vec<SeedFile>>) -> Error {
     }
 }
 
-/// What stands for the lines of a WinPE log that holds none.
-const EMPTY_LOG: &str = "(it is empty)";
+/// What stands for the lines of a WinPE log that holds no text (none, or only blank lines).
+const EMPTY_LOG: &str = "(no text)";
 
 /// `outcome` of a launch whose VM process was then killed with `killed`. A failed outcome stays the headline and names
 /// a kill that failed after it: the tree kill may have left a descendant running. An outcome that went well is the
