@@ -178,6 +178,51 @@ fn run_to_names_the_status_when_the_output_closed_after_the_command_had_ended(#[
     );
 }
 
+/// A writer that tells a channel every chunk it is given and refuses the final flush.
+struct TellThenRefuseFlush(mpsc::Sender<Vec<u8>>);
+
+impl Write for TellThenRefuseFlush {
+    fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+        self.0.send(chunk.to_vec()).unwrap();
+        Ok(chunk.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        FlushRefused.flush()
+    }
+}
+
+#[skuld::test]
+fn run_to_names_a_loss_before_the_closed_writer_and_takes_its_serial_log(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = running_instance(&fx, home);
+    let (told, heard) = mpsc::channel();
+    let end = exit_on_demand(&fx, &instance);
+    let mut out = TellThenRefuseFlush(told);
+
+    let result = std::thread::scope(|scope| {
+        // The status arrives, then output, then the VM exits under the command: a loss after the status. The final
+        // flush then fails.
+        let run =
+            scope.spawn(|| instance.run_to(&Command::new(["status-then-marker"]), &mut out, &mut std::io::sink()));
+        assert_eq!(heard.recv().unwrap(), b"marker\n");
+        end.send(()).unwrap();
+        run.join().unwrap()
+    });
+
+    let error = result.expect_err("the final flush fails");
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("the final flush was refused"), "{error}");
+    assert!(error.message().contains("the VM process exited"), "{error}");
+    let serial_log = home.join("serial.log");
+    assert_eq!(error.serial_log(), Some(serial_log.as_path()), "the loss's: {error}");
+    assert_eq!(
+        error.message().matches(&serial_log.display().to_string()).count(),
+        1,
+        "{error}"
+    );
+}
+
 #[skuld::test]
 fn run_to_returns_the_status_and_reports_the_loss_on_progress(#[fixture(unicode_home)] home: &Path) {
     let progress = memory();

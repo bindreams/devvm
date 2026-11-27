@@ -15,6 +15,10 @@ use crate::instance::dir::{InstanceDir, OpExclusive};
 use crate::vm::{remove_leftovers, warn_for};
 use crate::{Error, ErrorKind, Result};
 
+#[cfg(test)]
+#[path = "launch_tests.rs"]
+mod launch_tests;
+
 /// A machine that runs and has answered: still contained, and reached through `session`.
 pub(crate) struct Started {
     pub machine: Box<dyn Machine>,
@@ -157,7 +161,7 @@ pub(crate) fn write_ssh_entry(engine: &Engine, dir: &InstanceDir, target: &SshTa
         known_hosts: dir.path().join("known_hosts"),
     };
     match (top_level, configs.write_entry(&entry, &target.host_public)) {
-        (Err(first), Err(second)) => Err(first.together_with(second.message())),
+        (Err(first), Err(second)) => Err(first.with_step_naming(&second, |second| format!("{second} as well"))),
         (Err(first), Ok(())) => Err(first),
         (Ok(()), written) => written,
     }
@@ -214,13 +218,9 @@ fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine
 
 /// The error of a start that failed (`cause`) while the machine it had launched could not be killed (`kill`).
 fn survivor(cause: Error, kill: Error, what_happens: &str) -> Error {
-    Error::new(
-        cause.kind(),
+    cause.with_step_naming(&kill, |kill| {
         format!(
-            "{}; the machine that failed to start could not be killed either ({}) and may still run: {what_happens}",
-            cause.message(),
-            kill.message()
-        ),
-    )
-    .with_source(kill)
+            "the machine that failed to start could not be killed either ({kill}) and may still run: {what_happens}"
+        )
+    })
 }

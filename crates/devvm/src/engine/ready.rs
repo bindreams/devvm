@@ -142,10 +142,7 @@ pub(crate) fn reconnect_after_reset(
     let vm = engine.vm_exit(machine).map_err(|e| awaiting_ssh(e, target))?;
     let mut last_failed_read: Option<Error> = None;
     loop {
-        let session = connect(engine, target, &vm, bound).map_err(|e| match &last_failed_read {
-            Some(read) => e.together_with(format!("the last read of the boot id failed ({})", read.message())),
-            None => e,
-        })?;
+        let session = connect(engine, target, &vm, bound).map_err(|e| connect_failed(e, last_failed_read.as_ref()))?;
         last_failed_read = match read_boot_id(guest, &session) {
             Ok(ReadBootIdOutcome::Id(id)) if id != old_id => {
                 let session = ready_session(engine, guest, name, target, &vm, bound, session)?;
@@ -166,6 +163,16 @@ pub(crate) fn reconnect_after_reset(
     }
 }
 
+/// The failure of a connect after a reset, `error`, naming the read of the boot id before it that failed, if any.
+pub(super) fn connect_failed(error: Error, last_failed_read: Option<&Error>) -> Error {
+    match last_failed_read {
+        Some(read) => error.with_step_naming(read, |read| {
+            format!("the last read of the boot id failed ({read}) as well")
+        }),
+        None => error,
+    }
+}
+
 /// The failure of a boot id that stayed `old_id` (or could not be read, `last_failed_read`) until `bound` passed.
 pub(super) fn boot_id_unchanged(
     target: &SshTarget,
@@ -173,17 +180,19 @@ pub(super) fn boot_id_unchanged(
     bound: BootBound,
     last_failed_read: Option<&Error>,
 ) -> Error {
-    let read = last_failed_read.map_or(String::new(), |e| format!("the last read failed: {}; ", e.message()));
-    Error::new(
+    let error = Error::new(
         ErrorKind::ConnectionLost,
         format!(
-            "waiting for the boot id of {} to differ from {old_id}: it did not happen within the boot bound of {} \
-             ({read}serial log: {})",
+            "waiting for the boot id of {} to differ from {old_id}: it did not happen within the boot bound of {}",
             target.addr,
             crate::access::session::humanly(bound.limit()),
-            target.serial_log.display()
         ),
     )
+    .with_serial_log(&target.serial_log);
+    match last_failed_read {
+        Some(read) => error.with_step_naming(read, |read| format!("the last read failed ({read})")),
+        None => error,
+    }
 }
 
 /// The guest's readiness wait on `session`, reporting a boot that finished with problems.

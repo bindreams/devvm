@@ -501,7 +501,10 @@ fn gc_aborts_when_a_kept_layers_record_cannot_be_read(#[fixture(unicode_home)] h
         &as_current(child.key),
         &env.store.generation_dir(&child),
     );
-    assert!(std::error::Error::source(&error).is_some(), "{error:?}");
+    assert!(error.message().contains(") cannot be read (io: "), "{error}");
+    // The failed read is named, not nested: the source is the read's own.
+    let source = std::error::Error::source(&error).expect("the read's source");
+    assert!(source.is::<std::io::Error>(), "{source:?}");
     assert!(exists(&env, &old_parent));
 }
 

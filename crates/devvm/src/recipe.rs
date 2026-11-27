@@ -85,13 +85,11 @@ impl Recipe {
             let (next, key, label) = match &current.source {
                 Source::Recipe(path) => {
                     let parent = Recipe::from_file(path).map_err(|e| {
-                        let message = format!(
-                            "{} starts from {}: {}",
-                            current.path.display(),
-                            path.display(),
-                            e.message()
-                        );
-                        Error::new(e.kind(), message)
+                        let kind = e.kind();
+                        e.with_context(
+                            kind,
+                            format!("{} starts from {}", current.path.display(), path.display()),
+                        )
                     })?;
                     let key = chain_key(path)?;
                     (parent, key, path.display().to_string())

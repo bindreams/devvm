@@ -301,7 +301,7 @@ enum Launched {
 ///
 /// These headlines have kind [`ErrorKind::Unavailable`]. When there is none, the first host failure is the headline
 /// with its own kind. The host's failures (the VM process's status, the serial log) follow a headline once each,
-/// separated by `; `, and the first is the result's source. A failing exit carries what QEMU printed.
+/// separated by `; `; the first one's source is the result's source. A failing exit carries what QEMU printed.
 /// An end with no exit and no failure is an [`ErrorKind::Internal`] error: nothing says how the launch ended. It keeps
 /// the guest's `DEVVM-BASE-FAILED=` account in its message when the log holds one.
 fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
@@ -313,7 +313,7 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
         }
         return Err(Error::new(ErrorKind::Internal, message));
     }
-    let mut host: Vec<Error> = status.iter().chain(&log).cloned().collect();
+    let host: Vec<Error> = status.iter().chain(&log).cloned().collect();
     let powered_off = matches!(&exit, Some(Exit::Exited(exited)) if exited.status.success());
     let account = if let Some(why) = &serial.failed {
         let mut headline = guest_failed(why);
@@ -337,26 +337,24 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
     } else {
         exit.as_ref().filter(|_| !powered_off).map(|exit| ended(number, exit))
     };
-    let source = host.first().cloned();
-    let (kind, mut message, joined) = match account {
-        Some(account) => (ErrorKind::Unavailable, account, &host[..]),
-        None => match host.split_first() {
-            None => return Ok(Launched::Restarted),
-            Some(_) if host.len() == 1 => return Err(host.remove(0)),
-            Some((first, rest)) => (first.kind(), first.message().to_owned(), rest),
-        },
+    let (error, rest) = match (account, host.split_first()) {
+        // The account leads and names the host's first failure; the result carries that failure's serial log, tail
+        // and source, whether or not it caused the account.
+        (Some(account), Some((first, rest))) => (
+            Error::naming(ErrorKind::Unavailable, first, |first| format!("{account}; {first}")),
+            rest,
+        ),
+        (Some(account), None) => (Error::new(ErrorKind::Unavailable, account), &[][..]),
+        (None, None) => return Ok(Launched::Restarted),
+        (None, Some((first, []))) => return Err(first.clone()),
+        (None, Some((first, rest))) => (first.clone(), rest),
     };
-    for error in joined {
-        message.push_str(&format!("; {error}"));
-    }
-    let error = Error::new(kind, message);
-    let error = match &exit {
+    let error = rest
+        .iter()
+        .fold(error, |error, other| error.with_step_naming(other, str::to_owned));
+    Err(match &exit {
         Some(Exit::Exited(exited)) if !exited.status.success() => with_qemu_output(error, &exited.output),
         _ => error,
-    };
-    Err(match source {
-        Some(source) => error.with_source(source),
-        None => error,
     })
 }
 
@@ -676,43 +674,54 @@ impl<'a> Build<'a> {
         if self.watch.marker_seen() {
             return error;
         }
-        let logs = match self.winpe_logs() {
-            Ok(files) if files.is_empty() => "\nthe answer disk holds none of WinPE's logs".to_owned(),
-            Ok(files) => files
-                .iter()
-                .map(|file| {
-                    format!(
-                        "\n{} ({} bytes), last lines:\n{}",
-                        file.name,
-                        file.bytes.len(),
-                        last_lines(&String::from_utf8_lossy(&file.bytes))
-                    )
-                })
-                .collect(),
-            Err(read) => format!("\nthe logs on the answer disk cannot be read: {}", read.message()),
-        };
-        Error::new(error.kind(), format!("{}{logs}", error.message()))
+        with_winpe_files(error, self.winpe_logs())
     }
 }
+
+/// `error` with `logs`, what was read of WinPE's logs on the answer disk: a tail for each log, or a step when there is
+/// none or the read failed.
+fn with_winpe_files(mut error: Error, logs: Result<Vec<SeedFile>>) -> Error {
+    match logs {
+        Ok(files) if files.is_empty() => error.with_step("the answer disk holds none of WinPE's logs"),
+        Ok(files) => {
+            for file in &files {
+                let lines = last_lines(&String::from_utf8_lossy(&file.bytes));
+                let lines = if lines.is_empty() { EMPTY_LOG } else { lines.as_str() };
+                error.append_tail(
+                    &format!("{} ({} bytes), last lines", file.name, file.bytes.len()),
+                    lines,
+                );
+            }
+            error
+        }
+        Err(read) => error.with_step_naming(&read, |read| {
+            format!("the logs on the answer disk cannot be read ({read})")
+        }),
+    }
+}
+
+/// What stands for the lines of a WinPE log that holds no text (none, or only blank lines).
+const EMPTY_LOG: &str = "(no text)";
 
 /// `outcome` of a launch whose VM process was then killed with `killed`. A failed outcome stays the headline and names
 /// a kill that failed after it: the tree kill may have left a descendant running. An outcome that went well is the
 /// kill's error.
 fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
-    match outcome {
-        Err(error) => Err(error.after_cleanup("a VM process that may still run", killed)),
-        Ok(value) => killed.map(|()| value),
+    match (outcome, killed) {
+        (Err(error), Err(kill)) => Err(error.with_step_naming(&kill, |kill| {
+            format!("cleaning up failed as well, so a VM process that may still run remains ({kill})")
+        })),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(value), killed) => killed.map(|()| value),
     }
 }
 
 /// `error` of a launch whose VM process failed, with the last lines of what QEMU printed in it, or the note that it
 /// printed nothing.
-fn with_qemu_output(error: Error, output: &str) -> Error {
+fn with_qemu_output(mut error: Error, output: &str) -> Error {
     if output.trim().is_empty() {
-        return Error::new(
-            error.kind(),
-            format!("{}\nQEMU's output:\n{PRINTED_NOTHING}", error.message()),
-        );
+        error.append_tail("QEMU's output", PRINTED_NOTHING);
+        return error;
     }
     error.with_tail("QEMU's output", output)
 }

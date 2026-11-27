@@ -39,22 +39,22 @@ pub(super) fn run_to(
             engine.progress().warn(lost.message());
             Ok(status)
         }
-        ExecEnd::HostOutputClosed { error, status: None } => Err(Error::io(
-            ErrorKind::Io,
-            "writing the guest command's output failed, so the guest command was stopped",
-            error,
-        )),
-        ExecEnd::HostOutputClosed {
-            error,
-            status: Some(status),
-        } => Err(Error::io(
-            ErrorKind::Io,
-            format!(
-                "writing the guest command's output failed after the guest command ended with {}",
-                status.describe()
-            ),
-            error,
-        )),
+        ExecEnd::HostOutputClosed { error, status, lost } => {
+            let context = match status {
+                None => "writing the guest command's output failed, so the guest command was stopped".to_owned(),
+                Some(status) => format!(
+                    "writing the guest command's output failed after the guest command ended with {}",
+                    status.describe()
+                ),
+            };
+            let error = Error::io(ErrorKind::Io, context, error);
+            Err(match lost {
+                Some(lost) => {
+                    error.with_step_naming(&lost, |lost| format!("the command's output was lost as well ({lost})"))
+                }
+                None => error,
+            })
+        }
     }
 }
 

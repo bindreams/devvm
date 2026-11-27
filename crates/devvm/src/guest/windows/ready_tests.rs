@@ -1,12 +1,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::ErrorKind;
+use super::{ProbeOutcome, assess};
 use crate::access::{BootBound, VmExit};
+use crate::exit::{ExitStatus, Output};
 use crate::guest::windows::WindowsGuest;
 use crate::guest::{GuestOs, Readiness};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::{ProbeReply, Rig};
+use crate::{Error, ErrorKind};
 
 const NOT_IN_SESSION: &str = "devvm: the command did not reach the user's session\n";
 
@@ -76,6 +78,37 @@ fn a_probe_that_cannot_run_is_an_error_naming_the_cause(#[fixture(unicode_home)]
         // It is not retried: nobody would know why the guest never became ready.
         assert_eq!(rig.sshd.commands().len(), 1, "{cause}");
     }
+}
+
+#[skuld::test]
+fn a_probe_whose_output_was_lost_names_the_loss_once_and_keeps_its_serial_log_tail_and_source() {
+    let loss = Error::new(ErrorKind::ConnectionLost, "the VM exited")
+        .with_source(std::io::Error::other("the pipe broke"))
+        .with_serial_log("/x/serial.log")
+        .with_tail("QEMU's output", "qemu: terminating");
+    let output = Output {
+        status: ExitStatus::Code(0),
+        stdout: b"half an answer".to_vec(),
+        stderr: Vec::new(),
+        loss: Some(loss),
+    };
+
+    let ProbeOutcome::Failed(error) = assess(&output) else {
+        panic!("a lost output is a failure");
+    };
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(
+        error.message(),
+        "the guest's readiness probe could not run: its output was lost (connection-lost: the VM exited) (stdout: half \
+         an answer; stderr: ) (serial log: /x/serial.log)\nthe end of QEMU's output:\nqemu: terminating"
+    );
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")), "{error}");
+    assert_eq!(
+        std::error::Error::source(&error).map(ToString::to_string).as_deref(),
+        Some("the pipe broke"),
+        "{error}"
+    );
 }
 
 /// The boot bound is the one failure bound of the wait, which re-checks its condition until it holds.

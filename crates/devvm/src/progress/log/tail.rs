@@ -18,7 +18,7 @@ impl Error {
     /// than [`TAIL_LINE_BYTES`] shows `...` and its end.
     pub(crate) fn with_log_tail(mut self, what: &str, path: &Path) -> Error {
         if let Some(tail) = log_tail(path) {
-            self.append_tail(what, &tail);
+            self.append_tail(&format!("the end of {what}"), &tail);
         }
         self
     }

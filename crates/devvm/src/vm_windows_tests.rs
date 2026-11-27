@@ -1210,8 +1210,9 @@ fn an_unready_guest_reports_what_it_awaited_and_the_serial_log(#[fixture(unicode
         "{message}"
     );
     assert!(message.contains("300ms"), "the bound is named: {message}");
-    assert!(
-        message.contains(&dir.path().join("serial.log").display().to_string()),
+    assert_eq!(
+        error.serial_log(),
+        Some(dir.path().join("serial.log").as_path()),
         "the serial log is named: {message}"
     );
 }

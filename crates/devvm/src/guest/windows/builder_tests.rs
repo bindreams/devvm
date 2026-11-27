@@ -13,7 +13,7 @@ use crate::guest::windows::pins::VIRTIO_WIN;
 use crate::guest::windows::templates;
 use crate::guest::{BaseBuilder, BuildCtx};
 use crate::iso::{IsoMemo, key_iso};
-use crate::media::read_files;
+use crate::media::{SeedFile, read_files};
 use crate::recipe::{ProductKey, Source};
 use crate::store::fetch::Fetcher;
 use crate::store::layers::layers_tests::{Env, env, key, request};
@@ -419,6 +419,80 @@ fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
     );
 }
 
+#[skuld::test]
+fn text_added_to_an_error_by_the_builder_follows_its_serial_log_and_keeps_its_source() {
+    let failed = || {
+        crate::Error::new(ErrorKind::Unavailable, "the VM process exited")
+            .with_source(std::io::Error::other("the cause"))
+            .with_serial_log("/x/serial.log")
+    };
+
+    let quiet = super::with_qemu_output(failed(), "");
+    assert_eq!(quiet.serial_log(), Some(Path::new("/x/serial.log")));
+    assert!(std::error::Error::source(&quiet).is_some(), "the source stays");
+    assert_eq!(
+        quiet.message(),
+        format!(
+            "the VM process exited (serial log: /x/serial.log)\nQEMU's output:\n{}",
+            crate::backend::PRINTED_NOTHING
+        )
+    );
+
+    let loud = super::with_qemu_output(failed(), "qemu: out of memory");
+    assert_eq!(
+        loud.message(),
+        "the VM process exited (serial log: /x/serial.log)\nthe end of QEMU's output:\nqemu: out of memory"
+    );
+}
+
+/// A launch's error before WinPE's logs are added: a source, a serial log and a tail.
+fn stalled_in_winpe() -> Error {
+    Error::new(ErrorKind::Unavailable, "launch 1 stalled")
+        .with_source(std::io::Error::other("the cause"))
+        .with_serial_log("/x/serial.log")
+        .with_tail("the serial log", "firmware line")
+}
+
+#[skuld::test]
+fn winpes_logs_follow_the_tail_keep_the_source_and_serial_log_and_a_later_step_lands_before_them() {
+    let files = vec![
+        SeedFile {
+            name: "logs/winpe.log".to_owned(),
+            bytes: b"a\r\nb\r\n".to_vec(),
+        },
+        SeedFile {
+            name: "logs/setupact.log".to_owned(),
+            bytes: Vec::new(),
+        },
+    ];
+
+    let error = super::with_winpe_files(stalled_in_winpe(), Ok(files)).with_step("cleaning up failed as well");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    let source = std::error::Error::source(&error).expect("the source stays");
+    assert_eq!(source.to_string(), "the cause");
+    assert_eq!(
+        error.message(),
+        "launch 1 stalled; cleaning up failed as well (serial log: /x/serial.log)\n\
+         the end of the serial log:\nfirmware line\n\
+         logs/winpe.log (6 bytes), last lines:\na\nb\n\
+         logs/setupact.log (0 bytes), last lines:\n(no text)"
+    );
+}
+
+#[skuld::test]
+fn an_answer_disk_with_none_of_winpes_logs_is_a_step_before_the_tail() {
+    let error = super::with_winpe_files(stalled_in_winpe(), Ok(Vec::new()));
+
+    assert_eq!(
+        error.message(),
+        "launch 1 stalled; the answer disk holds none of WinPE's logs (serial log: /x/serial.log)\n\
+         the end of the serial log:\nfirmware line"
+    );
+    assert!(std::error::Error::source(&error).is_some(), "the source stays");
+}
+
 // The clock of a bound ================================================================================================
 
 const MINUTE: Duration = Duration::from_secs(60);
@@ -540,18 +614,17 @@ fn winpe_is_over_once_any_marker_has_been_seen() {
 fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
     let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
 
-    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+    let kill = Error::new(ErrorKind::Io, "cannot kill the VM").with_serial_log("/x/serial.log");
+
+    let error = after_kill(outcome, Err(kill)).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
-    assert!(
-        error.message().starts_with("the guest failed to build the base"),
-        "{error}"
+    assert_eq!(
+        error.message(),
+        "the guest failed to build the base; cleaning up failed as well, so a VM process that may still run remains \
+         (io: cannot kill the VM) (serial log: /x/serial.log)"
     );
-    assert!(error.message().contains("cannot kill the VM"), "{error}");
-    assert!(
-        error.message().contains("so a VM process that may still run remains"),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")), "{error}");
 }
 
 #[skuld::test]
@@ -675,6 +748,15 @@ const LOG_TEXT: &str = "cannot read the serial log";
 /// The failure to read the log at the wait, which a failed second read replaces.
 const LOG_WAIT_TEXT: &str = "the serial log failed during the wait";
 
+/// A host failure that says `text`, with a cause of its own as its source.
+fn host_failure(text: &str) -> Error {
+    Error::new(ErrorKind::Io, text).with_source(std::io::Error::other(cause_of(text)))
+}
+
+fn cause_of(text: &str) -> String {
+    format!("the cause of: {text}")
+}
+
 /// The result a launch must come to, as `Ok(true)` for a finished launch and `Ok(false)` for a restarted one, or the
 /// kind and the beginning of the error.
 fn expected(
@@ -747,22 +829,22 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                     Ending::Stall => End::stalled(stall(), None),
                     Ending::StallStatusUnknown => {
                         host_texts.push(STATUS_TEXT);
-                        End::stalled(stall(), Some(Error::new(ErrorKind::Io, STATUS_TEXT)))
+                        End::stalled(stall(), Some(host_failure(STATUS_TEXT)))
                     }
                     Ending::StatusUnknown => {
                         host_texts.push(STATUS_TEXT);
-                        End::failed(Error::new(ErrorKind::Io, STATUS_TEXT))
+                        End::failed(host_failure(STATUS_TEXT))
                     }
                     Ending::LogUnreadable => {
                         // A second failed read replaces this one.
                         if !read_failed {
                             host_texts.push(LOG_WAIT_TEXT);
                         }
-                        End::unreadable(Error::new(ErrorKind::Io, LOG_WAIT_TEXT))
+                        End::unreadable(host_failure(LOG_WAIT_TEXT))
                     }
                 };
                 if read_failed {
-                    end.log_read_again(Err(Error::new(ErrorKind::Io, LOG_TEXT)));
+                    end.log_read_again(Err(host_failure(LOG_TEXT)));
                     host_texts.push(LOG_TEXT);
                 }
 
@@ -782,19 +864,14 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                             assert!(!error.message().contains(LOG_WAIT_TEXT), "{row}: {error}");
                         }
                         assert!(!error.message().contains("as well"), "{row}: {error}");
-                        // The host's own failure is the headline, and so is the error itself, only when the guest
-                        // gave no account and the end told nothing.
-                        let is_the_host = matches!(account, Account::Nothing)
-                            && matches!(
-                                ending,
-                                Ending::CleanExit | Ending::StatusUnknown | Ending::LogUnreadable
-                            );
+                        // The first host failure's cause is the source, whether that failure or an account leads.
                         let source = std::error::Error::source(&error);
-                        if host_texts.is_empty() || (is_the_host && host_texts.len() == 1) {
-                            assert!(source.is_none(), "{row}");
-                        } else {
-                            let source = source.unwrap_or_else(|| panic!("{row}: no source"));
-                            assert!(source.to_string().contains(host_texts[0]), "{row}: {source}");
+                        match host_texts.first() {
+                            None => assert!(source.is_none(), "{row}"),
+                            Some(first) => {
+                                let source = source.unwrap_or_else(|| panic!("{row}: no source"));
+                                assert_eq!(source.to_string(), cause_of(first), "{row}");
+                            }
                         }
                     }
                     (expected, result) => panic!(
@@ -828,6 +905,47 @@ fn an_end_with_no_exit_and_no_failure_is_an_internal_error_whatever_the_guest_wr
             );
         }
     }
+}
+
+#[skuld::test]
+fn host_failures_that_follow_a_headline_are_named_without_their_serial_log_and_the_first_log_stays() {
+    let status = Error::new(ErrorKind::Io, "cannot read the status").with_serial_log("/x/status.log");
+    let log = Error::new(ErrorKind::Io, "cannot read the log").with_serial_log("/x/log.log");
+    let mut end = End::stalled(stall(), Some(status));
+    end.log = Some(log);
+
+    let error = verdict(1, end, &wrote(Some("boom"), false)).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert_eq!(error.serial_log(), Some(Path::new("/x/status.log")), "{error}");
+    assert_eq!(error.message().matches("serial log").count(), 1, "{error}");
+    assert!(
+        error
+            .message()
+            .contains("; io: cannot read the status; io: cannot read the log (serial log: /x/status.log)"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn the_first_host_failure_that_is_the_headline_keeps_its_serial_log_and_names_the_second_without_its() {
+    let status = Error::new(ErrorKind::Io, "cannot read the status").with_serial_log("/x/status.log");
+    let log = Error::new(ErrorKind::Download, "cannot read the log").with_serial_log("/x/log.log");
+    let end = End {
+        exit: None,
+        status: Some(status),
+        log: Some(log),
+    };
+
+    let error = verdict(1, end, &Serial::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(error.serial_log(), Some(Path::new("/x/status.log")), "{error}");
+    assert_eq!(
+        error.message(),
+        "cannot read the status; download: cannot read the log (serial log: /x/status.log)",
+        "{error}"
+    );
 }
 
 // What the second read of the log does to the one that failed at the wait =============================================
