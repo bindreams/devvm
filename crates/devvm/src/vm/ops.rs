@@ -39,11 +39,7 @@ pub(super) fn run_to(
             engine.progress().warn(lost.message());
             Ok(status)
         }
-        ExecEnd::HostOutputClosed {
-            error,
-            status,
-            serial_log,
-        } => {
+        ExecEnd::HostOutputClosed { error, status, lost } => {
             let context = match status {
                 None => "writing the guest command's output failed, so the guest command was stopped".to_owned(),
                 Some(status) => format!(
@@ -52,8 +48,10 @@ pub(super) fn run_to(
                 ),
             };
             let error = Error::io(ErrorKind::Io, context, error);
-            Err(match serial_log {
-                Some(path) => error.with_serial_log(path),
+            Err(match lost {
+                Some(lost) => error.with_step_naming(&lost, |lost| {
+                    format!("the command's output was lost as well ({lost})")
+                }),
                 None => error,
             })
         }

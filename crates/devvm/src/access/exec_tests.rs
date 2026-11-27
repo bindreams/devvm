@@ -131,15 +131,7 @@ impl std::io::Write for Refuses {
 fn full_of_output() -> tokio::sync::mpsc::Receiver<Event> {
     let (events, buffered) = tokio::sync::mpsc::channel(EVENT_BUFFER);
     for n in 0..EVENT_BUFFER {
-        events
-            .try_send(Event::Out(
-                format!(
-                    "{n}
-"
-                )
-                .into_bytes(),
-            ))
-            .unwrap();
+        events.try_send(Event::Out(format!("{n}\n").into_bytes())).unwrap();
     }
     buffered
 }
@@ -180,10 +172,10 @@ fn a_failed_write_names_the_loss_that_arrived_behind_a_full_event_buffer() {
     let end = relay(full_of_output(), &arrived, &mut Refuses, &mut Vec::new()).unwrap();
 
     match end {
-        ExecEnd::HostOutputClosed { error, status, .. } => {
+        ExecEnd::HostOutputClosed { error, status, lost } => {
             assert_eq!(status, Some(ExitStatus::Code(7)));
             assert!(error.to_string().contains("the reader is gone"), "{error}");
-            assert!(error.to_string().contains("the VM process exited"), "{error}");
+            assert_eq!(lost.expect("the loss").message(), "the VM process exited");
         }
         other => panic!("{other:?}"),
     }
@@ -225,10 +217,10 @@ fn a_failed_stderr_write_names_the_status_and_loss_that_arrived_and_flushes_stdo
     let end = relay(buffered, &arrived, &mut out, &mut Refuses).unwrap();
 
     match end {
-        ExecEnd::HostOutputClosed { error, status, .. } => {
+        ExecEnd::HostOutputClosed { error, status, lost } => {
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, Some(ExitStatus::Code(7)));
-            assert!(error.to_string().contains("the VM process exited"), "{error}");
+            assert_eq!(lost.expect("the loss").message(), "the VM process exited");
         }
         other => panic!("{other:?}"),
     }
@@ -250,10 +242,10 @@ fn a_failed_flush_at_the_end_names_the_status_and_the_loss_that_arrived() {
     let end = relay(buffered, &arrived, &mut out, &mut Flushing::default()).unwrap();
 
     match end {
-        ExecEnd::HostOutputClosed { error, status, .. } => {
+        ExecEnd::HostOutputClosed { error, status, lost } => {
             assert_eq!(status, Some(ExitStatus::Code(3)));
             assert!(error.to_string().contains("the flush was refused"), "{error}");
-            assert!(error.to_string().contains("the VM process exited"), "{error}");
+            assert_eq!(lost.expect("the loss").message(), "the VM process exited");
         }
         other => panic!("{other:?}"),
     }
@@ -271,13 +263,7 @@ fn the_first_loss_stays() {
 #[skuld::test]
 fn a_command_that_ended_with_a_loss_finishes_with_it() {
     let (events, buffered) = tokio::sync::mpsc::channel(EVENT_BUFFER);
-    events
-        .try_send(Event::Out(
-            b"1
-"
-            .to_vec(),
-        ))
-        .unwrap();
+    events.try_send(Event::Out(b"1\n".to_vec())).unwrap();
     events.try_send(Event::End(Ok(ExitStatus::Code(7)))).unwrap();
     let arrived = Arrived::default();
     arrived.set_status(ExitStatus::Code(7));
@@ -286,39 +272,11 @@ fn a_command_that_ended_with_a_loss_finishes_with_it() {
 
     let end = relay(buffered, &arrived, &mut out, &mut Vec::new()).unwrap();
 
-    assert_eq!(
-        out,
-        b"1
-"
-    );
+    assert_eq!(out, b"1\n");
     match end {
         ExecEnd::FinishedWithLoss { status, lost } => {
             assert_eq!(status, ExitStatus::Code(7));
             assert!(lost.message().contains("VM process exited"), "{lost}");
-        }
-        other => panic!("{other:?}"),
-    }
-}
-
-#[skuld::test]
-fn a_closed_host_output_names_what_was_lost_before_it() {
-    let lost = Error::new(ErrorKind::ConnectionLost, "the VM process exited").with_serial_log("/x/serial.log");
-    let broken = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the reader is gone");
-    match ExecEnd::host_output_closed(broken, Some(ExitStatus::Code(7)), Some(lost)) {
-        ExecEnd::HostOutputClosed {
-            error,
-            status,
-            serial_log,
-        } => {
-            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
-            assert_eq!(status, Some(ExitStatus::Code(7)));
-            assert_eq!(serial_log.as_deref(), Some(std::path::Path::new("/x/serial.log")));
-            let text = error.to_string();
-            assert!(text.contains("the reader is gone"), "{text}");
-            assert!(
-                text.contains("the command's output was lost as well (connection-lost: the VM process exited)"),
-                "{text}"
-            );
         }
         other => panic!("{other:?}"),
     }

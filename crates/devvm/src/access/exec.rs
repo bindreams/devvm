@@ -1,6 +1,5 @@
 //! Running one command over an SSH channel and mapping how it ended.
 
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use russh::client::Msg;
@@ -32,33 +31,9 @@ pub(crate) enum ExecEnd {
         error: std::io::Error,
         /// The command's status, when it had arrived before the failure.
         status: Option<ExitStatus>,
-        /// The serial log of the loss `error` names, for the error that is made of it.
-        serial_log: Option<PathBuf>,
-    },
-}
-
-impl ExecEnd {
-    /// [`ExecEnd::HostOutputClosed`] for `error`, which also names `lost`, what could not be carried before it, and
-    /// takes its serial log.
-    pub(super) fn host_output_closed(
-        error: std::io::Error,
-        status: Option<ExitStatus>,
+        /// What could not be carried before the failure, as in [`ExecEnd::FinishedWithLoss`].
         lost: Option<Error>,
-    ) -> ExecEnd {
-        let serial_log = lost.as_ref().and_then(|lost| lost.serial_log()).map(Path::to_owned);
-        let error = match lost {
-            None => error,
-            Some(lost) => {
-                let text = format!("{error}; the command's output was lost as well ({})", lost.embedded());
-                std::io::Error::new(error.kind(), text)
-            }
-        };
-        ExecEnd::HostOutputClosed {
-            error,
-            status,
-            serial_log,
-        }
-    }
+    },
 }
 
 /// Chunks of guest output the executing task may hold ahead of a slow host writer.
@@ -127,7 +102,11 @@ pub(super) fn relay(
                 return match (result, flushed, arrived.lost()) {
                     (Ok(status), Ok(()), None) => Ok(ExecEnd::Finished(status)),
                     (Ok(status), Ok(()), Some(lost)) => Ok(ExecEnd::FinishedWithLoss { status, lost }),
-                    (Ok(status), Err(error), lost) => Ok(ExecEnd::host_output_closed(error, Some(status), lost)),
+                    (Ok(status), Err(error), lost) => Ok(ExecEnd::HostOutputClosed {
+                        error,
+                        status: Some(status),
+                        lost,
+                    }),
                     (Err(e), Err(error), _) => {
                         Err(e.together_with(format!("flushing the host output failed ({error})")))
                     }
@@ -149,7 +128,11 @@ pub(super) fn relay(
             let _ = other.flush();
             // Dropping `events` tells the task to close the channel.
             drop(events);
-            return Ok(ExecEnd::host_output_closed(e, arrived.status(), arrived.lost()));
+            return Ok(ExecEnd::HostOutputClosed {
+                error: e,
+                status: arrived.status(),
+                lost: arrived.lost(),
+            });
         }
     }
 }
