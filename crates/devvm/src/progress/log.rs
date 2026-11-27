@@ -15,7 +15,9 @@ use crate::progress::{Event, Level, Outcome, Progress, TaskId, Total, escape_con
 use crate::random;
 use crate::store::layers::Clock;
 
-pub(crate) mod tail;
+mod tail;
+#[cfg(test)]
+pub(crate) use tail::log_tail;
 
 #[cfg(test)]
 #[path = "log_tests.rs"]

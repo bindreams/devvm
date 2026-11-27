@@ -6,6 +6,7 @@
 //! directory where it is off.
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,8 +20,7 @@ use crate::config::Config;
 use crate::engine::engine_tests::engine_with_bound;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, LaunchHooks, LaunchStep};
 use crate::host;
-use crate::progress::log::tail::tail_of_file;
-use crate::progress::{Progress, escape_controls, strip_ansi};
+use crate::progress::{Progress, escape_controls, log_tail, strip_ansi};
 use crate::recipe::Recipe;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_groups::{Group, unicode_base};
@@ -293,8 +293,8 @@ pub(super) fn shared_guest(#[fixture(vm_engine)] engine: &VmEngine) -> Result<Sh
     Ok(SharedGuest { vm, _image: image })
 }
 
-/// An instance made by `up`, removed when this is dropped: its machine outlives the process, so a test that fails
-/// would leave it running.
+/// An instance, removed when this is dropped (its machine outlives the process). A drop during a panic first prints
+/// the tail of its serial log.
 pub(super) struct Up(Option<Instance>);
 
 impl Up {
@@ -326,19 +326,20 @@ impl Drop for Up {
         if let Some(instance) = self.0.take() {
             let name = instance.name().to_owned();
             if std::thread::panicking() {
-                // The guest's console is gone with the instance.
-                let mut report = format!("serial log of instance {name}, last lines:");
-                match tail_of_file(&instance.dir().serial_log()) {
-                    Ok(tail) if tail.is_empty() => report.push_str("\n(empty)"),
-                    Ok(tail) => {
+                // `remove` deletes the serial log.
+                let path = instance.dir().serial_log();
+                let mut report = format!("serial log of instance {name} ({}), last lines:", path.display());
+                match log_tail(&path) {
+                    None => report.push_str("\n(no serial log)"),
+                    Some(tail) if tail.is_empty() => report.push_str("\n(empty)"),
+                    Some(tail) => {
                         for line in tail.lines() {
                             report.push_str(&format!("\n{}", escape_controls(&strip_ansi(line))));
                         }
                     }
-                    Err(e) if host::is_absent(&e) => report.push_str("\n(no serial log)"),
-                    Err(e) => report.push_str(&format!("\n(cannot be read: {e})")),
                 }
-                eprintln!("{report}");
+                // A failed write must not panic: a second panic aborts before `remove`, leaving the machine running.
+                let _ = writeln!(std::io::stderr(), "{report}");
             }
             if let Err(e) = instance.remove() {
                 eprintln!("cannot remove instance {name}: {e}");
