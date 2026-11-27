@@ -150,13 +150,14 @@ impl QemuMachine {
 
     /// `error` with what the process left behind, when the error means QEMU is gone: only a closed control socket
     /// (`ConnectionLost`) is a QEMU on its way out, so this waits for the exit before it reads the log. Any other error
-    /// is about the connection and says nothing of the process, which may be alive.
+    /// is about the connection and says nothing of the process, which may be alive. A failed wait is named after the
+    /// session's loss.
     fn explain(&self, error: Error) -> Error {
         if error.kind() != ErrorKind::ConnectionLost {
             return error;
         }
         if let Err(wait) = self.vm.wait() {
-            return wait;
+            return error.with_step_naming(&wait, |wait| format!("waiting for QEMU to exit failed ({wait})"));
         }
         self.exited(error)
     }
