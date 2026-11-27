@@ -5,10 +5,10 @@ use super::{ProbeOutcome, assess};
 use crate::access::{BootBound, VmExit};
 use crate::exit::{ExitStatus, Output};
 use crate::guest::windows::WindowsGuest;
-use crate::{Error, ErrorKind};
 use crate::guest::{GuestOs, Readiness};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::{ProbeReply, Rig};
+use crate::{Error, ErrorKind};
 
 const NOT_IN_SESSION: &str = "devvm: the command did not reach the user's session\n";
 
