@@ -51,11 +51,7 @@ fn output_on_an_extended_data_stream_other_than_stderr_is_an_error_naming_it(#[f
     assert!(error.message().contains("extended data stream 2"), "{error}");
     // Stream 1 is stderr, as ever.
     let output = session.exec_collect("extended-data 1").unwrap();
-    assert_eq!(
-        output.stderr,
-        b"on a stream of its own
-"
-    );
+    assert_eq!(output.stderr, b"on a stream of its own\n");
 }
 
 #[skuld::test]
@@ -87,11 +83,7 @@ fn output_lost_after_the_exit_status_is_reported_with_the_status(#[fixture(unico
     // Collected into memory, the status and the output that came before the loss are kept, and the loss is carried.
     let output = session.exec_collect("status-then-extended-data 2").unwrap();
     assert_eq!(output.status, ExitStatus::Code(7));
-    assert_eq!(
-        output.stdout,
-        b"before the status
-"
-    );
+    assert_eq!(output.stdout, b"before the status\n");
     let loss = output.loss.expect("the loss is carried with the output");
     assert!(loss.message().contains("extended data stream 2"), "{loss}");
 }
@@ -113,11 +105,7 @@ fn echo_round_trips_through_exec_collect(#[fixture(unicode_home)] home: &Path) {
 fn a_command_that_reads_stdin_sees_the_end_of_it(#[fixture(unicode_home)] home: &Path) {
     let output = Rig::new(home).connect().exec_collect("read-stdin").unwrap();
     assert_eq!(output.status, ExitStatus::Code(0));
-    assert_eq!(
-        output.stdout,
-        b"stdin ended
-"
-    );
+    assert_eq!(output.stdout, b"stdin ended\n");
 }
 
 #[skuld::test]

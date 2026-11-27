@@ -264,11 +264,7 @@ fn a_vm_whose_reboot_failed_connects_again_for_its_next_operation_and_keeps_that
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
     vm.run(&Command::new(["echo", "again"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(
         fx.server.connections() - before,
         1,
@@ -309,11 +305,7 @@ fn a_vm_whose_session_died_connects_again_for_its_next_operation(#[fixture(unico
 
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
 }
 
@@ -331,11 +323,7 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_and_runs_the_c
 
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
     let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
     assert_eq!(sent, 1, "the command was sent once");
@@ -371,11 +359,7 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_run_to(#[f
     vm.run_to(&Command::new(["echo", "after"]), &mut out, &mut Vec::new())
         .unwrap();
 
-    assert_eq!(
-        out,
-        b"after
-"
-    );
+    assert_eq!(out, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
     let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
     assert_eq!(sent, 1, "the command was sent once");
@@ -550,11 +534,7 @@ fn a_vm_whose_sessions_watcher_went_unwatched_connects_again_for_its_next_operat
 
     let output = vm.run(&Command::new(["echo", "after"])).unwrap();
 
-    assert_eq!(
-        output.stdout,
-        b"after
-"
-    );
+    assert_eq!(output.stdout, b"after\n");
     assert_eq!(fx.server.connections() - before, 1);
 }
 
