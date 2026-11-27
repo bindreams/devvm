@@ -228,7 +228,7 @@ pub fn conclude(status_file: Option<&Path>, outcome: &Result<ExitStatus>, width:
     Ending { exit, error_line }
 }
 
-/// `failure`, the status file's, with a step naming `original`, the command's: `<failure>; original: <kind>: <original>`.
+/// The status file's `failure`, naming the command's own error, `original`.
 fn with_original(failure: Error, original: &Error) -> Error {
     failure.with_step_naming(original, |original| format!("original: {original}"))
 }

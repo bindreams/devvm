@@ -71,20 +71,19 @@ impl ErrorKind {
 /// Shared, so that an `Error` can be cloned with its source.
 type Source = std::sync::Arc<dyn std::error::Error + Send + Sync + 'static>;
 
-/// An error goes inside another only through [`Error::naming`] and [`Error::with_step_naming`]; `format!("{inner}")`
-/// into an error message is the mistake.
+// Put one error inside another only with `naming` or `with_step_naming`, never `format!("{inner}")`.
 #[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
     // The texts and the path are boxed, not `String` and `PathBuf`, so that an `Error` stays small enough to return in
     // a `Result` (`clippy::result_large_err`).
-    /// The sentence, without the serial log and the tail.
+    /// The message without the serial log and the tail.
     body: Box<str>,
     /// The tails, each starting with a newline; they follow the serial log.
     tail: Box<str>,
     source: Option<Source>,
     serial_log: Option<Box<Path>>,
-    /// The body, the serial log and the tail as [`Error::message`] shows them. Only [`Error::render`] writes it.
+    /// What [`Error::message`] returns; [`Error::render`] rebuilds it after a part changes.
     message: Box<str>,
 }
 
@@ -153,8 +152,7 @@ impl Error {
     }
 
     /// A new error of `kind` whose body is `text(<inner as "kind: sentence">)`, for a different failure that names
-    /// `inner`. It takes `inner`'s serial log, tail and source (as [`Error::with_context`] does): nothing of `inner` but
-    /// its sentence is in the body.
+    /// `inner`. It takes `inner`'s serial log, tail and source.
     pub(crate) fn naming(kind: ErrorKind, inner: &Error, text: impl FnOnce(&str) -> String) -> Error {
         let mut error = Error::new(kind, text(&inner.sentence()));
         error.tail = inner.tail.clone();
@@ -214,7 +212,7 @@ impl Error {
         }
     }
 
-    /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, after its message and serial log path.
+    /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, as a tail.
     pub(crate) fn with_tail(mut self, what: &str, text: &str) -> Error {
         self.append_tail(&format!("the end of {what}"), &last_lines(text));
         self

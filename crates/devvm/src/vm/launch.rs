@@ -216,8 +216,7 @@ fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine
     Ok(())
 }
 
-/// The error of a start that failed (`cause`) while the machine it had launched could not be killed (`kill`): `cause`,
-/// its source kept, with the kill named in its text.
+/// The error of a start that failed (`cause`) while the machine it had launched could not be killed (`kill`).
 fn survivor(cause: Error, kill: Error, what_happens: &str) -> Error {
     cause.with_step_naming(&kill, |kill| {
         format!(

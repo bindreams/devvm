@@ -616,8 +616,8 @@ impl Qmp {
         }
     }
 
-    /// Fails with `Unavailable` unless the run state is one of `acceptable`, naming the state and setting the serial log: a
-    /// paused VM ignores a powerdown and a reset, and a caller must not wait for either.
+    /// Fails with `Unavailable` unless the run state is one of `acceptable`: a paused VM ignores a powerdown and a reset,
+    /// and a caller must not wait for either.
     pub(crate) fn require_state(&mut self, acceptable: &[&str], action: &str, serial_log: &Path) -> Result<()> {
         let status = self.query_status()?;
         if acceptable.contains(&status.state.as_str()) {

@@ -172,8 +172,7 @@ impl QemuMachine {
         }
     }
 
-    /// `error`, which ended devvm's use of a QEMU process that has exited, described again as that exit, with what QEMU
-    /// printed in this launch as its tail, whole.
+    /// `error` as QEMU's exit (`ConnectionLost`), with all that QEMU printed in this launch as its tail.
     fn exited(&self, error: Error) -> Error {
         let mut error = error
             .with_context(ErrorKind::ConnectionLost, "QEMU exited")
