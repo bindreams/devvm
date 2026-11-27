@@ -13,6 +13,9 @@ mod log;
 pub use crate::text::escape_controls;
 pub use lines::{LineProgress, Look, VERBOSE_VAR, verbose_from_env};
 pub use log::FileLog;
+/// For the VM suite's report of a failed test.
+#[cfg(test)]
+pub(crate) use log::log_tail;
 
 #[cfg(test)]
 #[path = "progress_tests.rs"]

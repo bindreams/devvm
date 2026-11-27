@@ -1,4 +1,4 @@
-//! The end of a log file, put on an error.
+//! The end of a log file.
 
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
@@ -17,12 +17,20 @@ impl Error {
     /// nothing; a file that cannot be read adds `(cannot be read: <error>)`. The file is streamed, and a line longer
     /// than [`TAIL_LINE_BYTES`] shows `...` and its end.
     pub(crate) fn with_log_tail(mut self, what: &str, path: &Path) -> Error {
-        match tail_of_file(path) {
-            Ok(tail) => self.append_tail(what, &tail),
-            Err(e) if is_absent(&e) => {}
-            Err(e) => self.append_tail(what, &format!("(cannot be read: {e})")),
+        if let Some(tail) = log_tail(path) {
+            self.append_tail(what, &tail);
         }
         self
+    }
+}
+
+/// The last [`TAIL_LINES`](crate::error::TAIL_LINES) lines of the file at `path`, or `(cannot be read: <error>)`; `None`
+/// when the file is missing ([`is_absent`]).
+pub(crate) fn log_tail(path: &Path) -> Option<String> {
+    match tail_of_file(path) {
+        Ok(tail) => Some(tail),
+        Err(e) if is_absent(&e) => None,
+        Err(e) => Some(format!("(cannot be read: {e})")),
     }
 }
 
