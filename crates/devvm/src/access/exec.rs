@@ -81,6 +81,12 @@ impl Arrived {
     pub(super) fn lost(&self) -> Option<Error> {
         self.seen().lost.clone()
     }
+
+    /// The status and the loss, read together: the task may set one and then the other between two separate reads.
+    pub(super) fn snapshot(&self) -> (Option<ExitStatus>, Option<Error>) {
+        let seen = self.seen();
+        (seen.status.clone(), seen.lost.clone())
+    }
 }
 
 /// Copies the output of the command whose task sends to `events` to `out` and `err`, until the command ends or a write
@@ -128,11 +134,8 @@ pub(super) fn relay(
             let _ = other.flush();
             // Dropping `events` tells the task to close the channel.
             drop(events);
-            return Ok(ExecEnd::HostOutputClosed {
-                error: e,
-                status: arrived.status(),
-                lost: arrived.lost(),
-            });
+            let (status, lost) = arrived.snapshot();
+            return Ok(ExecEnd::HostOutputClosed { error: e, status, lost });
         }
     }
 }
